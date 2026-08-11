@@ -43,8 +43,9 @@ DELETE /api/v1/properties/{uuid}/
 POST   /api/v1/properties/import/
 ```
 
-As listagens são paginadas. `search` consulta nome, município e estado; `ordering` aceita `name`,
-`area_hectares`, `created_at` e `updated_at`.
+As listagens são paginadas. `page_size` pode ajustar o tamanho até o máximo de 100 itens. `search`
+consulta nome, município e estado; `ordering` aceita `name`, `area_hectares`, `created_at` e
+`updated_at`.
 
 Exemplo de criação por GeoJSON:
 
@@ -71,6 +72,11 @@ Exemplo de criação por GeoJSON:
 O backend transforma `Polygon` em `MultiPolygon`, tenta corrigir auto-interseções quando o resultado
 continua poligonal, rejeita coordenadas fora do EPSG:4326 e sempre recalcula `area_hectares` em uma
 projeção equal-area. O valor de área enviado pelo cliente é ignorado.
+
+No frontend, o modo de mapa permite criar componentes adicionais e furos sem editar JSON. O furo é
+associado automaticamente ao componente que o contém; cruzamentos de anéis e sobreposição entre
+componentes são rejeitados antes do envio. Todos os anéis expõem vértices arrastáveis, e a estrutura
+lista componentes e furos para remoção individual.
 
 ## Importação de shapefile
 

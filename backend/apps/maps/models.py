@@ -23,6 +23,11 @@ class MapJob(models.Model):
         UPLOADING = "UPLOADING", "Enviando"
         COMPLETED = "COMPLETED", "Concluído"
         FAILED = "FAILED", "Falhou"
+        CANCELLED = "CANCELLED", "Cancelado"
+
+        @classmethod
+        def terminal_values(cls):
+            return {cls.COMPLETED, cls.FAILED, cls.CANCELLED}
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     status = models.CharField(
@@ -67,8 +72,24 @@ class MapJob(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="map_jobs"
     )
     created_at = models.DateTimeField(auto_now_add=True)
+    heartbeat_at = models.DateTimeField(null=True, blank=True, db_index=True)
     started_at = models.DateTimeField(null=True, blank=True)
     finished_at = models.DateTimeField(null=True, blank=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    cancelled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="cancelled_map_jobs",
+    )
+    reprocessed_from = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reprocessings",
+    )
 
     class Meta:
         ordering = ("-created_at",)
@@ -109,8 +130,8 @@ class GeneratedMap(models.Model):
     cloud_cover = models.DecimalField(
         max_digits=5, decimal_places=2, null=True, blank=True
     )
-    png_file = models.FileField(upload_to=generated_map_upload_to)
-    pdf_file = models.FileField(upload_to=generated_map_upload_to)
+    png_file = models.FileField(upload_to=generated_map_upload_to, max_length=255)
+    pdf_file = models.FileField(upload_to=generated_map_upload_to, max_length=255)
     metadata = models.JSONField(default=dict, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,

@@ -39,10 +39,30 @@ Listagem e detalhe:
 GET /api/v1/map-jobs/
 GET /api/v1/map-jobs/?status=PENDING&index_type=NDVI
 GET /api/v1/map-jobs/{uuid}/
+POST /api/v1/map-jobs/{uuid}/cancel/
+POST /api/v1/map-jobs/{uuid}/reprocess/
 ```
+
+`search` consulta nome da propriedade, identificador STAC e etapa atual. `ordering` aceita
+`created_at`, `finished_at`, `progress` e `status`. Todas as listagens paginadas aceitam `page` e
+`page_size`, limitado a 100.
+
+O cancelamento aceita apenas jobs ativos e é idempotente: sob lock, cria a liberação da reserva,
+grava `CANCELLED`, `cancelled_at` e `cancelled_by`. O worker considera `CANCELLED` terminal em todas
+as transições. Se cancelamento e finalização concorrerem, o primeiro lock transacional define o
+resultado; produtos não são persistidos e créditos liberados não podem ser capturados.
+
+O reprocessamento exige `Idempotency-Key` e aceita jobs `COMPLETED`, `FAILED` ou `CANCELLED`. Ele cria
+um novo job com snapshot, datas e parâmetros originais, registra `reprocessed_from_id`, consulta o
+preço vigente e faz uma nova reserva. Repetir a mesma chave e origem devolve o mesmo job.
 
 O job guarda um snapshot da geometria. Alterar ou excluir a propriedade depois não muda a área que
 será processada.
+
+Cada criação e transição relevante atualiza `heartbeat_at`. O comando `reconcile_maps` usa esse
+marcador para detectar inatividade, confirma novamente o estado sob lock e, no modo aplicado, marca
+o job como `FAILED/JOB_STALLED` com liberação idempotente da reserva. Consulte
+[reconciliation.md](reconciliation.md).
 
 ## Consultar billing
 
@@ -55,6 +75,7 @@ GET /api/v1/billing/prices/
 
 `CreditAccount` expõe os saldos `available_balance` e `reserved_balance`. O ledger é paginado,
 ordenado do evento mais recente para o mais antigo e pode ser filtrado pelo tipo da transação.
+Também aceita `ordering` por `created_at`, `amount` ou `transaction_type`.
 
 ## Invariantes de crédito
 
@@ -71,15 +92,21 @@ RELEASE: reserved  -= custo; available += custo
 Cada operação gera uma entrada imutável no ledger e possui chave de idempotência. Um job admite no
 máximo uma reserva e apenas um desfecho financeiro: captura ou liberação.
 
-## Estado provisório do worker
+## Estado atual do worker
 
 A task já pesquisa o Copernicus STAC e persiste o `stac_item_id` selecionado. Quando não encontra
 uma cena compatível, usa `NO_SATELLITE_SCENE_FOUND`; falhas temporárias do catálogo recebem retry
 limitado e terminam como `SATELLITE_CATALOG_UNAVAILABLE` se esgotadas.
 
-Como download e recorte ainda são a próxima etapa, após uma seleção bem-sucedida o job termina como
-`FAILED` com `error_code=PIPELINE_NOT_IMPLEMENTED` e libera a reserva. Assim, API, fila e busca real
-podem ser exercitadas sem cobrar por um produto inexistente.
+Após a seleção, o worker autentica por OAuth2, solicita B04/B08/SCL/`dataMask` recortados na Process
+API, valida o GeoTIFF e calcula o NDVI. Os estados avançam por `DOWNLOADING`, `PREPROCESSING` e
+`PROCESSING`, `RENDERING` e `UPLOADING`.
+
+O renderer cria PNG/PDF em diretório temporário e o serviço de produto envia ambos ao storage
+privado. A criação de `GeneratedMap`, captura do crédito e transição do job para `COMPLETED` ocorrem
+na mesma transação de banco. Falhas de configuração, autenticação, serviço raster, renderização,
+upload ou finalização recebem códigos específicos e compensam a reserva. Nenhum crédito é capturado
+sem os dois produtos persistidos.
 
 ## Ajuste administrativo
 
