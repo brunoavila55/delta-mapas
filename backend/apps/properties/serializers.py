@@ -37,13 +37,9 @@ class GeometryField(serializers.Field):
             normalized = normalize_multipolygon(geometry)
             validate_area_limit(normalized)
             return normalized
-        except (
-            GEOSException,
-            InvalidGeometry,
-            TypeError,
-            ValueError,
-            json.JSONDecodeError,
-        ) as exc:
+        except InvalidGeometry as exc:
+            raise serializers.ValidationError(exc.messages) from exc
+        except (GEOSException, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise serializers.ValidationError(str(exc)) from exc
 
 

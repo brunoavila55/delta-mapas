@@ -1,8 +1,10 @@
 from datetime import datetime, timezone
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import numpy as np
 from django.contrib.auth import get_user_model
 from django.contrib.gis.geos import MultiPolygon, Polygon
 from django.db import connection
@@ -19,9 +21,16 @@ from apps.billing.services import (
     release_reserved_credits,
     reserve_credits,
 )
-from apps.maps.exceptions import NoSatelliteSceneFound, SatelliteCatalogError
+from apps.maps.exceptions import (
+    CopernicusConfigurationError,
+    MapRenderingError,
+    NoSatelliteSceneFound,
+    SatelliteCatalogError,
+    SatelliteProcessUnavailable,
+)
 from apps.maps.models import MapJob
 from apps.maps.services.copernicus import CopernicusScene
+from apps.maps.services.pipeline import PipelineProcessingResult
 from apps.maps.tasks import process_map_job
 from apps.properties.models import Property
 
@@ -101,6 +110,84 @@ class BillingAndMapJobTests(TenantTestCase):
         }
         payload.update(overrides)
         return payload
+
+    @patch("apps.maps.tasks.CopernicusSceneService.search_best_scene")
+    def test_cancel_job_releases_credit_once_and_stops_worker(self, search):
+        job = self.create_job()
+        reserve_credits(
+            map_job=job,
+            amount=1,
+            idempotency_key=f"map-job:{job.id}:reserve",
+            created_by=self.user,
+        )
+
+        first = self.client.post(f"/api/v1/map-jobs/{job.id}/cancel/")
+        replay = self.client.post(f"/api/v1/map-jobs/{job.id}/cancel/")
+        task_result = process_map_job.apply(
+            args=(str(job.id), self.tenant.schema_name)
+        ).get()
+
+        job.refresh_from_db()
+        self.account.refresh_from_db()
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(replay.status_code, 200)
+        self.assertEqual(replay["Idempotent-Replayed"], "true")
+        self.assertEqual(job.status, MapJob.Status.CANCELLED)
+        self.assertEqual(job.cancelled_by, self.user)
+        self.assertIsNotNone(job.cancelled_at)
+        self.assertEqual(task_result, MapJob.Status.CANCELLED)
+        self.assertEqual(self.account.available_balance, 5)
+        self.assertEqual(self.account.reserved_balance, 0)
+        self.assertEqual(CreditTransaction.objects.count(), 2)
+        search.assert_not_called()
+
+    @patch("apps.maps.tasks.process_map_job.delay")
+    def test_reprocess_terminal_job_is_idempotent_and_reserves_credit(self, delay):
+        delay.return_value = SimpleNamespace(id="reprocessed-task")
+        source = self.create_job()
+        source.status = MapJob.Status.FAILED
+        source.current_step = "Falha anterior"
+        source.save(update_fields=("status", "current_step"))
+
+        first = self.client.post(
+            f"/api/v1/map-jobs/{source.id}/reprocess/",
+            HTTP_IDEMPOTENCY_KEY="reprocess-source-once",
+        )
+        replay = self.client.post(
+            f"/api/v1/map-jobs/{source.id}/reprocess/",
+            HTTP_IDEMPOTENCY_KEY="reprocess-source-once",
+        )
+
+        self.account.refresh_from_db()
+        reprocessed = MapJob.objects.exclude(pk=source.pk).get()
+        self.assertEqual(first.status_code, 202, first.data)
+        self.assertEqual(replay.status_code, 202, replay.data)
+        self.assertEqual(replay["Idempotent-Replayed"], "true")
+        self.assertEqual(first.data["id"], replay.data["id"])
+        self.assertEqual(reprocessed.reprocessed_from, source)
+        self.assertEqual(reprocessed.status, MapJob.Status.PENDING)
+        self.assertEqual(reprocessed.celery_task_id, "reprocessed-task")
+        self.assertEqual(self.account.available_balance, 4)
+        self.assertEqual(self.account.reserved_balance, 1)
+        self.assertEqual(CreditTransaction.objects.count(), 1)
+        delay.assert_called_once()
+
+    def test_active_job_cannot_be_reprocessed_and_failed_job_cannot_be_cancelled(self):
+        active = self.create_job()
+        failed = self.create_job()
+        failed.status = MapJob.Status.FAILED
+        failed.save(update_fields=("status",))
+
+        reprocess = self.client.post(
+            f"/api/v1/map-jobs/{active.id}/reprocess/",
+            HTTP_IDEMPOTENCY_KEY="active-reprocess",
+        )
+        cancel = self.client.post(f"/api/v1/map-jobs/{failed.id}/cancel/")
+
+        self.assertEqual(reprocess.status_code, 409)
+        self.assertEqual(reprocess.data["code"], "job_not_reprocessable")
+        self.assertEqual(cancel.status_code, 409)
+        self.assertEqual(cancel.data["code"], "job_not_cancellable")
 
     def test_reserve_and_capture_are_idempotent(self):
         job = self.create_job()
@@ -350,7 +437,12 @@ class BillingAndMapJobTests(TenantTestCase):
         self.assertEqual(CreditTransaction.objects.count(), 2)
 
     @patch("apps.maps.tasks.CopernicusSceneService.search_best_scene")
-    def test_scene_search_task_fails_safely_and_releases_credit_once(self, search):
+    @patch("apps.maps.tasks.process_scene_index")
+    @patch("apps.maps.tasks.render_index_map")
+    @patch("apps.maps.tasks.persist_generated_map")
+    def test_ndvi_task_renders_persists_and_completes(
+        self, persist_map, render_map, process_index, search
+    ):
         search.return_value = CopernicusScene(
             item_id="sentinel-scene-123",
             acquired_at=datetime(2026, 7, 20, 13, tzinfo=timezone.utc),
@@ -359,6 +451,18 @@ class BillingAndMapJobTests(TenantTestCase):
             collection="sentinel-2-l2a",
             platform="sentinel-2c",
         )
+        process_index.return_value = PipelineProcessingResult(
+            data=np.full((2, 2), 0.5, dtype=np.float32),
+            valid_mask=np.ones((2, 2), dtype=bool),
+            metadata={
+                "valid_pixel_count": 4,
+                "raster": {
+                    "crs": "EPSG:32722",
+                    "bounds": [500000, 8299980, 500020, 8300000],
+                },
+            },
+        )
+        render_map.return_value = SimpleNamespace()
         job = self.create_job()
         reserve_credits(
             map_job=job,
@@ -367,6 +471,16 @@ class BillingAndMapJobTests(TenantTestCase):
             created_by=self.user,
         )
 
+        def complete_map(**kwargs):
+            capture_reserved_credits(map_job=kwargs["job"], created_by=self.user)
+            MapJob.objects.filter(pk=kwargs["job"].pk).update(
+                status=MapJob.Status.COMPLETED,
+                progress=100,
+                current_step="Mapa concluído",
+            )
+            return SimpleNamespace(id="generated-map-123")
+
+        persist_map.side_effect = complete_map
         first = process_map_job.apply(args=(str(job.id), self.tenant.schema_name)).get()
         second = process_map_job.apply(
             args=(str(job.id), self.tenant.schema_name)
@@ -374,14 +488,127 @@ class BillingAndMapJobTests(TenantTestCase):
 
         job.refresh_from_db()
         self.account.refresh_from_db()
-        self.assertEqual(first, MapJob.Status.FAILED)
-        self.assertEqual(second, MapJob.Status.FAILED)
-        self.assertEqual(job.error_code, "PIPELINE_NOT_IMPLEMENTED")
+        self.assertEqual(first, MapJob.Status.COMPLETED)
+        self.assertEqual(second, MapJob.Status.COMPLETED)
+        self.assertEqual(job.error_code, "")
+        self.assertEqual(job.progress, 100)
         self.assertEqual(job.stac_item_id, "sentinel-scene-123")
-        self.assertEqual(self.account.available_balance, 5)
+        self.assertEqual(self.account.available_balance, 4)
         self.assertEqual(self.account.reserved_balance, 0)
         self.assertEqual(CreditTransaction.objects.count(), 2)
         search.assert_called_once()
+        process_index.assert_called_once()
+        render_map.assert_called_once()
+        persist_map.assert_called_once()
+        temporary_directory = process_index.call_args.kwargs["target_directory"]
+        self.assertFalse(Path(temporary_directory).exists())
+
+    @patch("apps.maps.tasks.CopernicusSceneService.search_best_scene")
+    @patch("apps.maps.tasks.process_scene_index")
+    @patch("apps.maps.tasks.render_index_map")
+    def test_rendering_failure_releases_credit(self, render_map, process_index, search):
+        search.return_value = CopernicusScene(
+            item_id="sentinel-render-failure",
+            acquired_at=datetime(2026, 7, 20, 13, tzinfo=timezone.utc),
+            cloud_cover=Decimal("2.5"),
+            assets={"B04": "red", "B08": "nir", "SCL": "scl"},
+            collection="sentinel-2-l2a",
+            platform="sentinel-2c",
+        )
+        process_index.return_value = PipelineProcessingResult(
+            data=np.full((2, 2), 0.5, dtype=np.float32),
+            valid_mask=np.ones((2, 2), dtype=bool),
+            metadata={
+                "valid_pixel_count": 4,
+                "raster": {
+                    "crs": "EPSG:32722",
+                    "bounds": [500000, 8299980, 500020, 8300000],
+                },
+            },
+        )
+        render_map.side_effect = MapRenderingError("render failed")
+        job = self.create_job()
+        reserve_credits(
+            map_job=job,
+            amount=1,
+            idempotency_key=f"map-job:{job.id}:reserve",
+            created_by=self.user,
+        )
+
+        result = process_map_job.apply(
+            args=(str(job.id), self.tenant.schema_name)
+        ).get()
+
+        job.refresh_from_db()
+        self.account.refresh_from_db()
+        self.assertEqual(result, MapJob.Status.FAILED)
+        self.assertEqual(job.error_code, "MAP_RENDERING_ERROR")
+        self.assertEqual(job.progress, 70)
+        self.assertEqual(self.account.available_balance, 5)
+        self.assertEqual(self.account.reserved_balance, 0)
+
+    @patch("apps.maps.tasks.CopernicusSceneService.search_best_scene")
+    @patch("apps.maps.tasks.process_scene_index")
+    def test_missing_oauth_configuration_releases_credit(self, process_index, search):
+        search.return_value = CopernicusScene(
+            item_id="sentinel-scene-auth",
+            acquired_at=datetime(2026, 7, 20, 13, tzinfo=timezone.utc),
+            cloud_cover=Decimal("2.5"),
+            assets={"B04": "red", "B08": "nir", "SCL": "scl"},
+            collection="sentinel-2-l2a",
+            platform="sentinel-2c",
+        )
+        process_index.side_effect = CopernicusConfigurationError("missing config")
+        job = self.create_job()
+        reserve_credits(
+            map_job=job,
+            amount=1,
+            idempotency_key=f"map-job:{job.id}:reserve",
+            created_by=self.user,
+        )
+
+        result = process_map_job.apply(
+            args=(str(job.id), self.tenant.schema_name)
+        ).get()
+
+        job.refresh_from_db()
+        self.account.refresh_from_db()
+        self.assertEqual(result, MapJob.Status.FAILED)
+        self.assertEqual(job.error_code, "COPERNICUS_AUTH_NOT_CONFIGURED")
+        self.assertEqual(self.account.available_balance, 5)
+        self.assertEqual(self.account.reserved_balance, 0)
+
+    @override_settings(COPERNICUS_PROCESS_MAX_RETRIES=0)
+    @patch("apps.maps.tasks.CopernicusSceneService.search_best_scene")
+    @patch("apps.maps.tasks.process_scene_index")
+    def test_exhausted_process_api_failure_releases_credit(self, process_index, search):
+        search.return_value = CopernicusScene(
+            item_id="sentinel-scene-unavailable",
+            acquired_at=datetime(2026, 7, 20, 13, tzinfo=timezone.utc),
+            cloud_cover=Decimal("2.5"),
+            assets={"B04": "red", "B08": "nir", "SCL": "scl"},
+            collection="sentinel-2-l2a",
+            platform="sentinel-2c",
+        )
+        process_index.side_effect = SatelliteProcessUnavailable("unavailable")
+        job = self.create_job()
+        reserve_credits(
+            map_job=job,
+            amount=1,
+            idempotency_key=f"map-job:{job.id}:reserve",
+            created_by=self.user,
+        )
+
+        result = process_map_job.apply(
+            args=(str(job.id), self.tenant.schema_name)
+        ).get()
+
+        job.refresh_from_db()
+        self.account.refresh_from_db()
+        self.assertEqual(result, MapJob.Status.FAILED)
+        self.assertEqual(job.error_code, "SATELLITE_PROCESS_UNAVAILABLE")
+        self.assertEqual(self.account.available_balance, 5)
+        self.assertEqual(self.account.reserved_balance, 0)
 
     @patch("apps.maps.tasks.CopernicusSceneService.search_best_scene")
     def test_scene_search_without_results_releases_credit(self, search):

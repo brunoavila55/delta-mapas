@@ -89,6 +89,26 @@ class PropertyAPITests(TenantTestCase):
         self.assertEqual(list_response.status_code, 200)
         self.assertEqual(list_response.data["count"], 1)
 
+        second_response = self.client.post(
+            "/api/v1/properties/",
+            {
+                "name": "Área Beta",
+                "geometry": self.polygon_geojson(),
+                "country": "BR",
+            },
+            format="json",
+        )
+        self.assertEqual(second_response.status_code, 201)
+        first_page = self.client.get("/api/v1/properties/?page_size=1&ordering=name")
+        second_page = self.client.get(
+            "/api/v1/properties/?page_size=1&ordering=name&page=2"
+        )
+        self.assertEqual(first_page.data["count"], 2)
+        self.assertEqual(len(first_page.data["results"]), 1)
+        self.assertIsNotNone(first_page.data["next"])
+        self.assertEqual(len(second_page.data["results"]), 1)
+        self.assertIsNotNone(second_page.data["previous"])
+
         patch_response = self.client.patch(
             f"/api/v1/properties/{property_id}/",
             {"name": "Fazenda Delta Atualizada"},
@@ -115,6 +135,10 @@ class PropertyAPITests(TenantTestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("geometry", response.data)
+        self.assertEqual(
+            str(response.data["geometry"][0]),
+            "A geometria deve conter ao menos um Polygon válido.",
+        )
 
     def test_user_without_membership_cannot_list_properties(self):
         User = get_user_model()

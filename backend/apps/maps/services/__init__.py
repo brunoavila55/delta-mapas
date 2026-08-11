@@ -30,6 +30,7 @@ def _request_fingerprint(
     date_from,
     date_to,
     max_cloud_cover,
+    reprocessed_from=None,
 ) -> str:
     payload = {
         "user_id": str(created_by.id),
@@ -43,6 +44,8 @@ def _request_fingerprint(
         "date_to": str(date_to) if date_to else None,
         "max_cloud_cover": str(max_cloud_cover),
     }
+    if reprocessed_from:
+        payload["reprocessed_from_id"] = str(reprocessed_from.id)
     serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(serialized.encode()).hexdigest()
 
@@ -50,7 +53,7 @@ def _request_fingerprint(
 def _compensate_enqueue_failure(job_id) -> None:
     with transaction.atomic():
         job = MapJob.objects.select_for_update().get(pk=job_id)
-        if job.status in {MapJob.Status.COMPLETED, MapJob.Status.FAILED}:
+        if job.status in MapJob.Status.terminal_values():
             return
         release_reserved_credits(map_job=job, created_by=job.created_by)
         job.status = MapJob.Status.FAILED
@@ -61,6 +64,7 @@ def _compensate_enqueue_failure(job_id) -> None:
             "Não foi possível iniciar o processamento. Tente novamente mais tarde."
         )
         job.finished_at = timezone.now()
+        job.heartbeat_at = job.finished_at
         job.save(
             update_fields=(
                 "status",
@@ -69,6 +73,7 @@ def _compensate_enqueue_failure(job_id) -> None:
                 "error_code",
                 "error_message",
                 "finished_at",
+                "heartbeat_at",
             )
         )
 
@@ -84,6 +89,7 @@ def create_map_job(
     date_from=None,
     date_to=None,
     max_cloud_cover=20,
+    reprocessed_from=None,
 ) -> tuple[MapJob, bool]:
     fingerprint = _request_fingerprint(
         created_by=created_by,
@@ -94,6 +100,7 @@ def create_map_job(
         date_from=date_from,
         date_to=date_to,
         max_cloud_cover=max_cloud_cover,
+        reprocessed_from=reprocessed_from,
     )
     schema_name = connection.schema_name
 
@@ -118,6 +125,7 @@ def create_map_job(
             status=MapJob.Status.PENDING,
             progress=0,
             current_step="Aguardando processamento",
+            heartbeat_at=timezone.now(),
             index_type=index_type,
             geometry_snapshot=geometry_snapshot,
             property=property_instance,
@@ -129,6 +137,7 @@ def create_map_job(
             request_idempotency_key=idempotency_key,
             request_fingerprint=fingerprint,
             created_by=created_by,
+            reprocessed_from=reprocessed_from,
         )
         reserve_credits(
             map_job=job,

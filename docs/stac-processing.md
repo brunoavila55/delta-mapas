@@ -52,19 +52,20 @@ O cálculo `(B08 - B04) / (B08 + B04)` é vetorizado com NumPy. O processador ma
 masked arrays, valores não finitos, denominador zero e, por padrão, as classes SCL
 `0, 1, 3, 8, 9, 10, 11`. A lista pode ser substituída ao instanciar o processador.
 
-## Limite desta etapa
+## Obtenção e processamento raster
 
-Nenhum asset é obtido ou persistido. Foi decidido usar OAuth2 Client Credentials e a Sentinel Hub
-Process API na próxima etapa, em vez de credenciais permanentes para acesso direto ao bucket S3
-`eodata`. O STAC continuará responsável pela descoberta e rastreabilidade da cena.
+O STAC continua responsável pela descoberta e rastreabilidade. Após selecionar a cena, o worker usa
+OAuth2 Client Credentials para obter um token de curta duração e chama a Sentinel Hub Process API.
+O token permanece em memória, é reutilizado enquanto válido e renovado antes da expiração.
 
-O próximo estágio deverá usar `tempfile.TemporaryDirectory()` e Rasterio para:
+A requisição restringe o intervalo a cinco minutos antes/depois do horário da cena STAC e solicita
+B04, B08, SCL e `dataMask` em um único GeoTIFF `FLOAT32`. A AOI é transformada para a zona UTM do
+centroide e processada numa grade comum de 10 metros. O `dataMask` remove pixels fora da AOI; SCL,
+nodata e valores inválidos são aplicados pelo pipeline NDVI.
 
-1. obter e reutilizar com segurança um token OAuth de curta duração;
-2. solicitar somente B04, B08 e SCL já limitados à AOI;
-3. reprojetar/alinhá-los numa grade comum, quando necessário;
-4. entregar os arrays ao processador;
-5. remover todos os intermediários mesmo em falha.
+O download é streaming, possui limites configuráveis de pixels e bytes e usa arquivo `.part` com
+rename atômico. Tudo fica em `TemporaryDirectory()` e é removido mesmo em falha; nenhum raster
+Sentinel bruto é persistido no MinIO.
 
 As credenciais existirão apenas no `.env` e serão disponibilizadas somente ao backend e ao worker:
 
@@ -72,5 +73,9 @@ As credenciais existirão apenas no `.env` e serão disponibilizadas somente ao 
 COPERNICUS_CLIENT_ID=
 COPERNICUS_CLIENT_SECRET=
 COPERNICUS_TOKEN_URL=https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token
-COPERNICUS_PROCESS_URL=https://sh.dataspace.copernicus.eu/api/v1/process
+COPERNICUS_PROCESS_URL=https://sh.dataspace.copernicus.eu/process/v1
 ```
+
+Backend e worker são os únicos consumidores dessas variáveis. Falhas temporárias de autenticação,
+rede, rate limit e servidor recebem retry limitado; credenciais recusadas, payload inválido e limites
+excedidos encerram o job sem retry e liberam a reserva.

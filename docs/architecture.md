@@ -3,9 +3,9 @@
 ## Escopo atual
 
 O projeto possui a fundação executável do MVP, autenticação JWT, API de propriedades com GeoJSON e
-importação segura de shapefile, cobrança transacional, API idempotente de `MapJob`, seleção de cenas
-no Copernicus STAC e núcleo vetorizado de NDVI. Download, recorte raster e renderização ainda não
-foram implementados.
+importação segura de shapefile, cobrança transacional, API idempotente de `MapJob` e seleção de cenas
+no Copernicus STAC. Download, recorte raster, máscaras e cálculo vetorizado de NDVI estão integrados;
+renderização cartográfica, persistência privada e captura de créditos também estão operacionais.
 
 ## Visão geral
 
@@ -19,6 +19,7 @@ PostgreSQL + PostGIS
 Django ──enfileira──→ Celery ──broker/resultados──→ Redis
                            │
                            ├── Copernicus STAC
+                           ├── Sentinel Hub Process API (OAuth2)
                            └── produtos finais ──→ MinIO (S3)
 ```
 
@@ -89,13 +90,15 @@ GeneratedMap + captura do crédito
 Limpeza garantida dos intermediários
 ```
 
-Criação, reserva e pesquisa STAC já estão implementadas. A seleção filtra interseção, período,
-cobertura máxima de nuvens e assets obrigatórios, priorizando menor nuvem e cena mais recente. Até o
-download raster ser integrado, a task registra a cena escolhida, usa `PIPELINE_NOT_IMPLEMENTED`,
-marca o job como falho e libera a reserva de forma idempotente.
+Criação, reserva, pesquisa STAC e cálculo NDVI já estão implementados. A seleção filtra interseção,
+período, cobertura máxima de nuvens e assets obrigatórios, priorizando menor nuvem e cena mais
+recente. A Process API devolve um GeoTIFF temporário numa grade UTM comum; Rasterio valida as bandas
+e o processador aplica `dataMask`, SCL e nodata. Matplotlib compõe PNG/PDF; somente esses produtos
+são enviados ao MinIO. A task cria `GeneratedMap`, captura o crédito e conclui o job.
 
-STAC, processamento NumPy/rasterio e renderização são serviços separados. `BaseIndexProcessor` e
-`NDVIProcessor` já calculam o índice sobre arrays alinhados e aplicam SCL/nodata sem loops por pixel.
-A task apenas orquestrará o pipeline, preservando idempotência e controle explícito de estado. A
-captura será feita somente depois da persistência de `GeneratedMap`; falhas anteriores liberam a
-reserva.
+STAC, OAuth, Process API, processamento NumPy/Rasterio, renderização e persistência são serviços
+separados.
+`BaseIndexProcessor` e `NDVIProcessor` calculam o índice sobre arrays alinhados e aplicam
+SCL/nodata sem loops por pixel. A task orquestra o pipeline, preservando idempotência e controle
+explícito de estado. A captura é feita somente depois da persistência de `GeneratedMap`; falhas
+anteriores liberam a reserva.

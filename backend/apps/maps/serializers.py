@@ -1,10 +1,12 @@
+import uuid
+
 from django.conf import settings
 from rest_framework import serializers
 
 from apps.properties.models import Property
 from apps.properties.serializers import GeometryField
 
-from .models import IndexType, MapJob
+from .models import GeneratedMap, IndexType, MapJob
 
 
 class MapJobSerializer(serializers.ModelSerializer):
@@ -13,6 +15,12 @@ class MapJobSerializer(serializers.ModelSerializer):
     property_name = serializers.CharField(
         source="property.name", read_only=True, allow_null=True
     )
+    generated_map_id = serializers.SerializerMethodField()
+    reprocessed_from_id = serializers.UUIDField(read_only=True, allow_null=True)
+
+    def get_generated_map_id(self, obj) -> uuid.UUID | None:
+        generated_map = getattr(obj, "generated_map", None)
+        return generated_map.id if generated_map else None
 
     class Meta:
         model = MapJob
@@ -35,8 +43,13 @@ class MapJobSerializer(serializers.ModelSerializer):
             "credit_cost",
             "created_by",
             "created_at",
+            "heartbeat_at",
             "started_at",
             "finished_at",
+            "cancelled_at",
+            "cancelled_by",
+            "reprocessed_from_id",
+            "generated_map_id",
         )
         read_only_fields = fields
 
@@ -101,3 +114,44 @@ class MapJobCreateSerializer(serializers.Serializer):
         attrs["property_instance"] = property_instance
         attrs["geometry_snapshot"] = geometry
         return attrs
+
+
+class GeneratedMapSerializer(serializers.ModelSerializer):
+    geometry_snapshot = GeometryField(read_only=True)
+    property_id = serializers.UUIDField(read_only=True, allow_null=True)
+    property_name = serializers.CharField(
+        source="property.name", read_only=True, allow_null=True
+    )
+    png_download_url = serializers.SerializerMethodField()
+    pdf_download_url = serializers.SerializerMethodField()
+
+    def _download_url(self, obj, file_format: str) -> str:
+        request = self.context.get("request")
+        path = f"/api/v1/maps/{obj.id}/download/{file_format}/"
+        return request.build_absolute_uri(path) if request else path
+
+    def get_png_download_url(self, obj) -> str:
+        return self._download_url(obj, "png")
+
+    def get_pdf_download_url(self, obj) -> str:
+        return self._download_url(obj, "pdf")
+
+    class Meta:
+        model = GeneratedMap
+        fields = (
+            "id",
+            "job_id",
+            "property_id",
+            "property_name",
+            "index_type",
+            "geometry_snapshot",
+            "scene_date",
+            "stac_item_id",
+            "cloud_cover",
+            "metadata",
+            "png_download_url",
+            "pdf_download_url",
+            "created_by",
+            "created_at",
+        )
+        read_only_fields = fields

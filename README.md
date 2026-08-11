@@ -3,9 +3,11 @@
 Base do MVP de um SaaS multitenant para geração de produtos de sensoriamento remoto agrícola. O
 projeto sobe Django/GeoDjango, PostgreSQL/PostGIS, Celery, Redis, MinIO e React, com autenticação JWT,
 propriedades geoespaciais, cobrança transacional por créditos, criação idempotente de `MapJob` e
-seleção de cenas Sentinel-2 via STAC. O download e o pipeline raster completo ainda não foram
-implementados. A próxima integração obterá os dados pela Sentinel Hub Process API, autenticada com
-OAuth2 Client Credentials.
+seleção de cenas Sentinel-2 via STAC. O frontend já oferece login, painel, cadastro de áreas,
+acompanhamento de jobs, prévia dos mapas e downloads autenticados. A obtenção do recorte raster e o
+cálculo de NDVI usam a Sentinel Hub Process API, autenticada com OAuth2 Client Credentials. O pipeline gera mapas
+cartográficos PNG/PDF, persiste somente os produtos finais no MinIO e captura o crédito após a
+conclusão.
 
 ## Componentes
 
@@ -13,8 +15,9 @@ OAuth2 Client Credentials.
 - banco: PostgreSQL 17 + PostGIS 3.5;
 - tarefas: Celery com Redis, inicialmente com concorrência 1;
 - arquivos: `django-storages` sobre API S3 do MinIO, bucket privado;
-- satélite: Copernicus STAC para descoberta e Sentinel Hub Process API para obtenção futura dos
-  recortes raster;
+- satélite: Copernicus STAC para descoberta e Sentinel Hub Process API para obtenção dos recortes
+  raster;
+- cartografia: Matplotlib sobre grade UTM, com coordenadas geográficas transformadas por PyProj;
 - API: OpenAPI/Swagger com `drf-spectacular`;
 - frontend: React, Vite, TypeScript, Tailwind, MapLibre, TanStack Query e React Router;
 - qualidade: pytest, Ruff e Black.
@@ -23,6 +26,9 @@ Veja [docs/architecture.md](docs/architecture.md) para as decisões e os limites
 Os contratos da API estão em [docs/properties-api.md](docs/properties-api.md) e
 [docs/map-jobs-billing.md](docs/map-jobs-billing.md).
 O estágio geoespacial atual está em [docs/stac-processing.md](docs/stac-processing.md).
+Renderização, persistência e downloads estão em [docs/generated-maps.md](docs/generated-maps.md).
+As telas, a sessão e os fluxos do cliente estão em [docs/frontend.md](docs/frontend.md).
+Expiração de jobs e auditoria do storage estão em [docs/reconciliation.md](docs/reconciliation.md).
 O contexto consolidado para retomada do desenvolvimento está em [context.md](context.md).
 
 ## Estrutura
@@ -86,7 +92,7 @@ necessário adicionar `127.0.0.1 public.localhost` ao arquivo de hosts.
 
 ## Credenciais Copernicus OAuth
 
-A pesquisa no STAC atual não exige autenticação. Para a próxima etapa, crie um OAuth client em
+A pesquisa no STAC não exige autenticação. Para processar os recortes raster, crie um OAuth client em
 [Copernicus Data Space — User Settings](https://shapps.dataspace.copernicus.eu/dashboard/#/account/settings)
 e adicione os valores somente ao `.env` local da raiz:
 
@@ -94,12 +100,19 @@ e adicione os valores somente ao `.env` local da raiz:
 COPERNICUS_CLIENT_ID=seu_client_id
 COPERNICUS_CLIENT_SECRET=seu_client_secret
 COPERNICUS_TOKEN_URL=https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token
-COPERNICUS_PROCESS_URL=https://sh.dataspace.copernicus.eu/api/v1/process
+COPERNICUS_PROCESS_URL=https://sh.dataspace.copernicus.eu/process/v1
 ```
 
 O `.env` está ignorado pelo Git. Nunca exponha o client secret no React, em logs ou em arquivos
-versionados. Backend e worker serão os únicos consumidores. Estas quatro variáveis documentam o
-contrato decidido, mas ainda serão conectadas ao Django/Compose na próxima etapa do pipeline.
+versionados. Backend e worker são os únicos consumidores. Depois de adicionar ou alterar as
+credenciais, recrie esses serviços para aplicar o ambiente:
+
+```bash
+docker compose up --build -d backend celery_worker
+```
+
+O token é obtido pelo fluxo Client Credentials, mantido somente em memória e renovado antes da
+expiração. Consulte `.env.example` para timeouts, retries, resolução e limites de segurança.
 
 ## Migrations
 
@@ -172,12 +185,20 @@ GET  /api/v1/billing/prices/
 GET  /api/v1/map-jobs/
 POST /api/v1/map-jobs/
 GET  /api/v1/map-jobs/{uuid}/
+POST /api/v1/map-jobs/{uuid}/cancel/
+POST /api/v1/map-jobs/{uuid}/reprocess/
+
+GET /api/v1/maps/
+GET /api/v1/maps/{uuid}/
+GET /api/v1/maps/{uuid}/download/png/
+GET /api/v1/maps/{uuid}/download/pdf/
 ```
 
 A criação de job exige o header `Idempotency-Key`, reserva o preço vigente do índice e responde
-`202 Accepted`. O worker pesquisa e registra a melhor cena disponível. Enquanto download e
-processamento raster não existem, encerra o job com `PIPELINE_NOT_IMPLEMENTED` e libera integralmente
-a reserva, sem consumir créditos.
+`202 Accepted`. O worker pesquisa a melhor cena, obtém um GeoTIFF temporário com B04, B08, SCL e
+`dataMask`, aplica as máscaras, calcula o NDVI, renderiza PNG/PDF e envia os arquivos finais ao
+MinIO. `GeneratedMap`, conclusão do job e captura do crédito são finalizados transacionalmente. Em
+qualquer falha anterior, os temporários são removidos e a reserva é liberada.
 
 Para ajustar créditos manualmente com ledger auditável:
 
@@ -190,6 +211,15 @@ docker compose exec backend python manage.py adjust_credits \
   --username admin
 ```
 
+Para auditar jobs travados e arquivos do tenant sem modificar dados:
+
+```bash
+docker compose exec backend python manage.py reconcile_maps --schema demo
+```
+
+Use `--apply` para expirar jobs travados e devolver suas reservas. A exclusão de objetos órfãos
+exige as duas opções `--apply --delete-orphans`; produtos com arquivo ausente são apenas reportados.
+
 ## Verificações
 
 ```bash
@@ -197,6 +227,8 @@ docker compose run --rm backend python manage.py check
 docker compose run --rm backend pytest
 docker compose run --rm backend ruff check .
 docker compose run --rm frontend npm run build
+docker compose run --rm frontend npm run lint
+docker compose run --rm frontend npm run test
 docker compose config --quiet
 ```
 
@@ -209,15 +241,14 @@ docker compose exec backend python manage.py shell -c \
 
 ## Limitações deliberadas desta etapa
 
-- as telas React ainda não consomem autenticação, propriedades, billing e jobs;
-- assets Copernicus ainda não são baixados; nenhuma imagem bruta é armazenada;
-- autenticação OAuth e chamada à Sentinel Hub Process API ainda não estão conectadas;
-- o processador NDVI opera sobre arrays já alinhados, mas ainda não está conectado à task;
-- o worker encerra os jobs após selecionar a cena e libera a reserva até o pipeline avançar;
+- geometrias compostas podem ser desenhadas e editadas no mapa, mas ainda não há operações
+  avançadas como divisão ou união visual de componentes;
+- o raster Sentinel é temporário e removido após o job; somente produtos finais são armazenados;
+- o template cartográfico atual é fixo em A4 paisagem e ainda não possui mapas-base externos;
+- a reconciliação existe como comando operacional, mas ainda não possui agendamento recorrente;
+- produtos com arquivo ausente são reportados para intervenção, sem recomposição automática;
 - `docker-compose.prod.yml`, proxy HTTPS e deploy OCI ficam para a etapa de produção.
 
 ## Próximo passo
 
-Implementar o cliente OAuth2 com cache seguro do token e integrar a Sentinel Hub Process API para
-obter B04, B08 e SCL recortados na AOI. Os resultados temporários serão alinhados com Rasterio e
-entregues ao processador NDVI; nenhum raster Sentinel bruto será persistido no MinIO.
+Preparar o Compose de produção com proxy HTTPS, serviços endurecidos e deploy OCI.

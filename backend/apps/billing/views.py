@@ -1,5 +1,5 @@
 from drf_spectacular.utils import extend_schema
-from rest_framework import generics
+from rest_framework import filters, generics
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -25,6 +25,9 @@ class CreditAccountView(APIView):
 class CreditTransactionListView(generics.ListAPIView):
     permission_classes = (IsActiveTenantMember,)
     serializer_class = CreditTransactionSerializer
+    filter_backends = (filters.OrderingFilter,)
+    ordering_fields = ("created_at", "amount", "transaction_type")
+    ordering = ("-created_at",)
 
     def get_queryset(self):
         queryset = CreditTransaction.objects.select_related("map_job").all()
