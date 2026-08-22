@@ -108,12 +108,27 @@ export function PropertyMap({
     if (!containerRef.current || mapRef.current) return
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: { version: 8, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#e7eee7' } }] },
+      style: {
+        version: 8,
+        sources: {
+          satellite: {
+            type: 'raster',
+            tiles: [
+              'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+            ],
+            tileSize: 256,
+            maxzoom: 19,
+            attribution: 'Esri, Maxar, Earthstar Geographics',
+          },
+        },
+        layers: [{ id: 'satellite', type: 'raster', source: 'satellite' }],
+      },
       center: [-47.9, -15.8],
       zoom: 8,
       attributionControl: false,
       doubleClickZoom: false,
     })
+    map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right')
     map.addControl(new maplibregl.NavigationControl({ showCompass: true }), 'top-right')
     map.on('load', () => {
       map.addSource('properties', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })

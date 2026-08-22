@@ -17,5 +17,11 @@ export default defineConfig({
     proxy: {
       '/api': { target: 'http://backend:8000', changeOrigin: false },
     },
+    watch: {
+      // Bind mounts from the Windows host into the Docker container don't
+      // propagate inotify events, so chokidar needs to poll for changes.
+      usePolling: true,
+      interval: 300,
+    },
   },
 })

@@ -102,8 +102,14 @@ class SentinelHubProcessClientTests(SimpleTestCase):
         self.assertEqual(data["dataFilter"]["maxCloudCoverage"], 20.0)
         self.assertEqual(payload["output"]["resx"], 10)
         self.assertEqual(payload["evalscript"], SENTINEL_BANDS_EVALSCRIPT)
-        self.assertIn("12:55:00Z", data["dataFilter"]["timeRange"]["from"])
-        self.assertIn("13:05:00Z", data["dataFilter"]["timeRange"]["to"])
+        # The window brackets the whole UTC day of acquisition (plus the
+        # configured tolerance as padding), not a narrow band around the
+        # exact timestamp: STAC and Sentinel Hub's own catalog can disagree
+        # on the acquisition time by more than a few minutes.
+        self.assertIn("2026-07-19T23:55:00Z", data["dataFilter"]["timeRange"]["from"])
+        self.assertTrue(
+            data["dataFilter"]["timeRange"]["to"].startswith("2026-07-21T00:04:59")
+        )
 
     @override_settings(COPERNICUS_MAX_OUTPUT_PIXELS=1)
     def test_rejects_request_over_pixel_limit_before_network(self):
