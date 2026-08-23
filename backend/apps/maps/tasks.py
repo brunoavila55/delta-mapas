@@ -11,18 +11,12 @@ from apps.billing.services import release_reserved_credits
 from apps.properties.services import calculate_area_hectares
 
 from .exceptions import (
-    CopernicusAuthenticationError,
     CopernicusAuthenticationUnavailable,
-    CopernicusConfigurationError,
-    MapFinalizationError,
     MapJobCancelled,
-    MapRenderingError,
     NoSatelliteSceneFound,
-    RasterProcessingError,
+    PipelineStepFailure,
     SatelliteCatalogError,
-    SatelliteProcessRejected,
     SatelliteProcessUnavailable,
-    StorageUploadError,
 )
 from .models import MapJob
 from .services.copernicus import CopernicusScene, CopernicusSceneService
@@ -358,35 +352,10 @@ def process_map_job(self, job_id: str, schema_name: str) -> str:
                 progress=20,
                 scene=scene,
             )
-        except CopernicusConfigurationError:
-            logger.error(
-                "Copernicus OAuth credentials are not configured",
-                extra={"job_id": job.id, "user_id": job.created_by_id},
-            )
-            return _fail_job(
-                job_id=job_id,
-                error_code="COPERNICUS_AUTH_NOT_CONFIGURED",
-                error_message="A integração de imagens ainda não foi configurada.",
-                current_step="Integração Copernicus não configurada",
-                progress=20,
-                scene=scene,
-            )
-        except CopernicusAuthenticationError:
-            logger.error(
-                "Copernicus OAuth authentication was rejected",
-                extra={"job_id": job.id, "user_id": job.created_by_id},
-            )
-            return _fail_job(
-                job_id=job_id,
-                error_code="COPERNICUS_AUTH_FAILED",
-                error_message="Não foi possível autenticar no serviço de imagens.",
-                current_step="Falha de autenticação Copernicus",
-                progress=20,
-                scene=scene,
-            )
-        except SatelliteProcessRejected:
+        except PipelineStepFailure as exc:
             logger.exception(
-                "Sentinel Hub rejected the raster request",
+                "Map pipeline step failed: %s",
+                type(exc).__name__,
                 extra={
                     "job_id": job.id,
                     "user_id": job.created_by_id,
@@ -395,78 +364,10 @@ def process_map_job(self, job_id: str, schema_name: str) -> str:
             )
             return _fail_job(
                 job_id=job_id,
-                error_code="SATELLITE_PROCESS_REJECTED",
-                error_message="O serviço de imagens recusou a solicitação raster.",
-                current_step="Solicitação raster recusada",
-                progress=20,
-                scene=scene,
-            )
-        except RasterProcessingError:
-            logger.exception(
-                "Raster processing failed",
-                extra={
-                    "job_id": job.id,
-                    "user_id": job.created_by_id,
-                    "stac_item_id": scene.item_id,
-                },
-            )
-            return _fail_job(
-                job_id=job_id,
-                error_code="RASTER_PROCESSING_ERROR",
-                error_message="Não foi possível processar as bandas da cena selecionada.",
-                current_step="Falha no processamento raster",
-                progress=50,
-                scene=scene,
-            )
-        except MapRenderingError:
-            logger.exception(
-                "Map rendering failed",
-                extra={
-                    "job_id": job.id,
-                    "user_id": job.created_by_id,
-                    "stac_item_id": scene.item_id,
-                },
-            )
-            return _fail_job(
-                job_id=job_id,
-                error_code="MAP_RENDERING_ERROR",
-                error_message="Não foi possível renderizar o mapa cartográfico.",
-                current_step="Falha na renderização do mapa",
-                progress=70,
-                scene=scene,
-            )
-        except StorageUploadError:
-            logger.exception(
-                "Generated map upload failed",
-                extra={
-                    "job_id": job.id,
-                    "user_id": job.created_by_id,
-                    "stac_item_id": scene.item_id,
-                },
-            )
-            return _fail_job(
-                job_id=job_id,
-                error_code="STORAGE_UPLOAD_ERROR",
-                error_message="Não foi possível armazenar os arquivos finais do mapa.",
-                current_step="Falha ao armazenar produtos finais",
-                progress=85,
-                scene=scene,
-            )
-        except MapFinalizationError:
-            logger.exception(
-                "Generated map finalization failed",
-                extra={
-                    "job_id": job.id,
-                    "user_id": job.created_by_id,
-                    "stac_item_id": scene.item_id,
-                },
-            )
-            return _fail_job(
-                job_id=job_id,
-                error_code="MAP_FINALIZATION_ERROR",
-                error_message="Não foi possível concluir o mapa e a cobrança.",
-                current_step="Falha ao finalizar mapa",
-                progress=85,
+                error_code=exc.error_code,
+                error_message=exc.default_message,
+                current_step=exc.current_step,
+                progress=exc.progress,
                 scene=scene,
             )
         except Exception:

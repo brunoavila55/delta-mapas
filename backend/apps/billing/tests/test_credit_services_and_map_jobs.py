@@ -25,14 +25,19 @@ from apps.billing.services import (
     reserve_credits,
 )
 from apps.maps.exceptions import (
+    CopernicusAuthenticationError,
     CopernicusConfigurationError,
+    MapFinalizationError,
     MapJobEnqueueError,
     MapJobIdempotencyConflict,
     MapJobTransitionConflict,
     MapRenderingError,
     NoSatelliteSceneFound,
+    RasterProcessingError,
     SatelliteCatalogError,
+    SatelliteProcessRejected,
     SatelliteProcessUnavailable,
+    StorageUploadError,
 )
 from apps.maps.models import MapJob
 from apps.maps.services import create_map_job
@@ -513,6 +518,56 @@ class BillingAndMapJobTests(TenantTestCase):
         self.account.refresh_from_db()
         self.assertEqual(result, MapJob.Status.FAILED)
         self.assertEqual(job.error_code, "COPERNICUS_AUTH_NOT_CONFIGURED")
+        self.assertEqual(self.account.available_balance, 5)
+        self.assertEqual(self.account.reserved_balance, 0)
+
+    @patch("apps.maps.tasks.CopernicusSceneService.search_best_scene")
+    @patch("apps.maps.tasks.process_scene_index")
+    def test_pipeline_step_failures_map_to_their_own_error_code(
+        self, process_index, search
+    ):
+        # Every PipelineStepFailure subclass carries its own error_code,
+        # message, step and progress; the task dispatches all of them
+        # through a single `except PipelineStepFailure` instead of one
+        # hand-written block per exception type. This exercises that
+        # dispatch for the subclasses not already covered by a dedicated
+        # test above (OAuth) or below (rendering).
+        cases = [
+            (CopernicusAuthenticationError, "COPERNICUS_AUTH_FAILED", 20),
+            (SatelliteProcessRejected, "SATELLITE_PROCESS_REJECTED", 20),
+            (RasterProcessingError, "RASTER_PROCESSING_ERROR", 50),
+            (StorageUploadError, "STORAGE_UPLOAD_ERROR", 85),
+            (MapFinalizationError, "MAP_FINALIZATION_ERROR", 85),
+        ]
+        for exception_class, expected_code, expected_progress in cases:
+            with self.subTest(exception=exception_class.__name__):
+                search.return_value = CopernicusScene(
+                    item_id=f"sentinel-{expected_code.lower()}",
+                    acquired_at=datetime(2026, 7, 20, 13, tzinfo=timezone.utc),
+                    cloud_cover=Decimal("2.5"),
+                    assets={"B04": "red", "B08": "nir", "SCL": "scl"},
+                    collection="sentinel-2-l2a",
+                    platform="sentinel-2c",
+                )
+                process_index.side_effect = exception_class("boom")
+                job = self.create_job()
+                reserve_credits(
+                    map_job=job,
+                    amount=1,
+                    idempotency_key=f"map-job:{job.id}:reserve",
+                    created_by=self.user,
+                )
+
+                result = process_map_job.apply(
+                    args=(str(job.id), self.tenant.schema_name)
+                ).get()
+
+                job.refresh_from_db()
+                self.assertEqual(result, MapJob.Status.FAILED)
+                self.assertEqual(job.error_code, expected_code)
+                self.assertEqual(job.progress, expected_progress)
+
+        self.account.refresh_from_db()
         self.assertEqual(self.account.available_balance, 5)
         self.assertEqual(self.account.reserved_balance, 0)
 
