@@ -190,6 +190,17 @@ img { display: block; max-width: 100%; }
 .source-divider::before, .source-divider::after { width: 1px; height: 55px; content: ""; background: var(--line); }
 .geojson-field textarea { min-height: 195px; color: #c5e8ce; background: #1c2e28; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 10px; }
 
+.geo-editor { display: grid; gap: 10px; margin-bottom: 18px; }
+.geo-search { position: relative; }
+.geo-search input { width: 100%; padding: 11px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); font-size: 12px; }
+.geo-search input:focus { border-color: var(--leaf); outline: none; }
+.geo-search-results { position: absolute; z-index: 1000; top: calc(100% + 4px); left: 0; right: 0; overflow: hidden auto; max-height: 220px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); box-shadow: var(--shadow); }
+.geo-search-item { display: block; width: 100%; padding: 9px 13px; border: 0; border-bottom: 1px solid var(--line); background: none; text-align: left; font-size: 11px; cursor: pointer; }
+.geo-search-item:last-child { border-bottom: 0; }
+.geo-search-item:hover { background: #f2f6ef; }
+.geo-map { z-index: 0; overflow: hidden; height: 380px; border: 1px solid var(--line); border-radius: 14px; }
+.geo-hint { margin: 0; color: var(--muted); font-size: 9px; }
+
 .job-stack { display: grid; gap: 9px; }
 .job-row { position: relative; padding: 18px 20px 13px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }
 .job-main { display: grid; grid-template-columns: 70px minmax(0, 1fr) auto; gap: 15px; align-items: center; }

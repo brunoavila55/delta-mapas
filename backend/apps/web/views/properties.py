@@ -1,3 +1,5 @@
+import json
+
 from django.contrib import messages
 from django.db import transaction
 from django.db.models import Q
@@ -67,7 +69,17 @@ def property_form(request, pk=None):
     return render(
         request,
         "web/property_form.html",
-        {"form": form, "property": instance},
+        {
+            "form": form,
+            "property": instance,
+            "property_map_data": {
+                "geometry": (
+                    json.loads(instance.geometry.geojson)
+                    if instance and instance.geometry
+                    else None
+                ),
+            },
+        },
     )
 
 
