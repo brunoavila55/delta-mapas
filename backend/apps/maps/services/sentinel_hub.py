@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass
-from datetime import timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -107,6 +107,18 @@ def build_process_request(
     def iso_utc(value) -> str:
         return value.isoformat().replace("+00:00", "Z")
 
+    # The Copernicus STAC catalog and the Sentinel Hub Process API catalog can
+    # disagree on the exact acquisition timestamp for the same scene (seen with
+    # Sentinel-2C items), so pinning the request to a narrow window around
+    # `acquired_at` can miss the scene entirely and silently return a
+    # nodata-only raster. A Sentinel-2 tile is only revisited every ~5 days, so
+    # bracketing the whole UTC day (plus the configured tolerance as padding)
+    # still uniquely targets the same scene while tolerating that mismatch.
+    day_start = datetime.combine(acquired_at.date(), time.min, tzinfo=timezone.utc)
+    day_end = datetime.combine(acquired_at.date(), time.max, tzinfo=timezone.utc)
+    window_start = day_start - tolerance
+    window_end = day_end + tolerance
+
     grid = ProcessGrid(
         epsg=epsg,
         width=width,
@@ -124,8 +136,8 @@ def build_process_request(
                     "type": "sentinel-2-l2a",
                     "dataFilter": {
                         "timeRange": {
-                            "from": iso_utc(acquired_at - tolerance),
-                            "to": iso_utc(acquired_at + tolerance),
+                            "from": iso_utc(window_start),
+                            "to": iso_utc(window_end),
                         },
                         "mosaickingOrder": "leastCC",
                         "maxCloudCoverage": float(max_cloud_cover),

@@ -12,12 +12,27 @@ from pystac_client.exceptions import APIError
 from apps.maps.services.copernicus import BoundedStacApiIO, CopernicusSceneService
 
 
+FULL_TILE_GEOMETRY = {
+    "type": "Polygon",
+    "coordinates": [
+        [
+            (-49.0, -16.0),
+            (-49.0, -14.0),
+            (-47.0, -14.0),
+            (-47.0, -16.0),
+            (-49.0, -16.0),
+        ]
+    ],
+}
+
+
 def make_item(
     item_id: str,
     *,
     acquired_at: datetime,
     cloud_cover: object,
     asset_names: tuple[str, ...] = ("B04_10m", "B08_10m", "SCL_20m"),
+    geometry: dict | None = FULL_TILE_GEOMETRY,
 ):
     return SimpleNamespace(
         id=item_id,
@@ -28,6 +43,7 @@ def make_item(
             name: SimpleNamespace(href=f"https://example.test/{item_id}/{name}.jp2")
             for name in asset_names
         },
+        geometry=geometry,
     )
 
 
@@ -161,6 +177,44 @@ class CopernicusSceneServiceTests(SimpleTestCase):
                 acquired_at=datetime(2026, 7, 2, tzinfo=timezone.utc),
                 cloud_cover=1,
                 asset_names=("B04_10m", "B08_10m"),
+            ),
+        ]
+        service, _, _ = self.service_with_items(items)
+
+        with self.assertRaises(NoSatelliteSceneFound):
+            service.search_best_scene(
+                geometry=self.geometry,
+                requested_scene_date=None,
+                date_from=date(2026, 7, 1),
+                date_to=date(2026, 7, 31),
+                max_cloud_cover=Decimal("20"),
+            )
+
+    def test_discards_items_that_do_not_fully_cover_the_area(self):
+        partial_overlap_geometry = {
+            "type": "Polygon",
+            "coordinates": [
+                [
+                    (-48.015, -15.015),
+                    (-48.015, -15.005),
+                    (-48.005, -15.005),
+                    (-48.005, -15.015),
+                    (-48.015, -15.015),
+                ]
+            ],
+        }
+        items = [
+            make_item(
+                "partial-coverage",
+                acquired_at=datetime(2026, 7, 15, tzinfo=timezone.utc),
+                cloud_cover=1,
+                geometry=partial_overlap_geometry,
+            ),
+            make_item(
+                "no-geometry",
+                acquired_at=datetime(2026, 7, 16, tzinfo=timezone.utc),
+                cloud_cover=1,
+                geometry=None,
             ),
         ]
         service, _, _ = self.service_with_items(items)

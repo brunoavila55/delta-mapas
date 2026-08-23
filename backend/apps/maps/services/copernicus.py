@@ -11,6 +11,8 @@ from django.conf import settings
 from pystac_client import Client
 from pystac_client.exceptions import APIError
 from pystac_client.stac_api_io import StacApiIO
+from shapely.geometry.base import BaseGeometry
+from shapely.geometry import shape as shapely_shape
 
 from ..exceptions import NoSatelliteSceneFound, SatelliteCatalogError
 
@@ -117,6 +119,16 @@ def _cloud_cover(item: Any) -> Decimal | None:
     return value
 
 
+def _item_footprint(item: Any) -> BaseGeometry | None:
+    geometry = getattr(item, "geometry", None)
+    if not geometry:
+        return None
+    try:
+        return shapely_shape(geometry)
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
 def _required_assets(item: Any) -> dict[str, str] | None:
     resolved: dict[str, str] = {}
     for logical_name, aliases in REQUIRED_ASSET_ALIASES.items():
@@ -154,6 +166,7 @@ class CopernicusSceneService:
             date_to=date_to,
         )
         intersects = json.loads(geometry.geojson)
+        aoi_shape = shapely_shape(intersects)
 
         try:
             if self.client_factory is None:
@@ -187,11 +200,14 @@ class CopernicusSceneService:
             cloud_cover = _cloud_cover(item)
             acquired_at = item.datetime
             assets = _required_assets(item)
+            footprint = _item_footprint(item)
             if (
                 cloud_cover is None
                 or cloud_cover > max_cloud_cover
                 or acquired_at is None
                 or assets is None
+                or footprint is None
+                or not footprint.covers(aoi_shape)
             ):
                 continue
             if acquired_at.tzinfo is None:
