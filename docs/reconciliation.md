@@ -54,6 +54,52 @@ nunca são removidos pela rotina, mesmo quando o outro arquivo do mesmo produto 
 
 ## Agendamento
 
-Nesta etapa o comando é manual. Em produção, execute-o periodicamente pelo agendador da plataforma
-para cada schema, começando em modo de simulação e enviando a saída aos logs/alertas. O agendamento
-automático fica para a configuração de deploy.
+O serviço `celery_beat` publica `maps.reconcile_all_tenants` no intervalo configurado. A task obtém
+um advisory lock global no PostgreSQL, lista os tenants no schema público e executa cada tenant de
+forma isolada. Se uma execução anterior ainda estiver ativa, a nova execução termina como
+`skipped_locked` sem duplicar trabalho.
+
+Em desenvolvimento o agendamento vem desabilitado. Em produção os defaults são:
+
+```env
+MAP_RECONCILIATION_ENABLED=true
+MAP_RECONCILIATION_INTERVAL_SECONDS=900
+MAP_RECONCILIATION_APPLY_STALLED=true
+MAP_RECONCILIATION_DELETE_ORPHANS=false
+```
+
+Jobs sem atividade são encerrados e têm a reserva devolvida. Órfãos continuam somente reportados;
+a exclusão automática deliberadamente permanece desligada. Mantenha exatamente uma instância do
+`celery_beat`, embora o advisory lock também proteja contra sobreposição acidental das tasks.
+
+Para disparar uma execução pelo worker e aguardar o resumo:
+
+```bash
+docker compose exec backend python manage.py shell -c \
+  "from apps.maps.tasks import reconcile_all_tenants; print(reconcile_all_tenants.delay().get(timeout=300))"
+```
+
+O resultado contém `status`, totais por categoria e o estado da entrega do alerta.
+
+## Alertas operacionais
+
+Toda execução escreve um resumo estruturado nos logs JSON com quantidade de tenants, jobs
+expirados, arquivos ausentes, órfãos e falhas. Quando há anomalias, um webhook HTTPS opcional também
+pode receber o evento:
+
+```env
+OPERATIONS_ALERT_WEBHOOK_URL=https://alertas.exemplo.com/delta-mapas
+OPERATIONS_ALERT_WEBHOOK_SECRET=segredo-independente-para-assinatura
+OPERATIONS_ALERT_TIMEOUT_SECONDS=10
+OPERATIONS_ALERT_COOLDOWN_SECONDS=21600
+```
+
+Sem URL, o modo é `logging_only`. O corpo é JSON e traz `event`, `severity`, `occurred_at`, `summary`,
+`incident` e `dedupe_key`. Quando há secret, o header `X-Delta-Mapas-Signature` contém
+`sha256=<HMAC-SHA256-do-corpo>`. Eventos idênticos são suprimidos no Redis durante o cooldown; a
+chave só é gravada após resposta HTTP bem-sucedida, permitindo nova tentativa no ciclo seguinte em
+caso de falha.
+
+Arquivos ausentes ou falhas por tenant geram severidade `critical`. Jobs expirados e órfãos geram
+`warning`. Webhooks HTTP são recusados em produção. O destino precisa responder com status 2xx e
+deve validar a assinatura antes de processar o evento.

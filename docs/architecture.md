@@ -2,17 +2,17 @@
 
 ## Escopo atual
 
-O projeto possui a fundação executável do MVP, autenticação JWT, API de propriedades com GeoJSON e
-importação segura de shapefile, cobrança transacional, API idempotente de `MapJob` e seleção de cenas
+O projeto possui a fundação executável do MVP, autenticação por sessão, cadastro de propriedades com
+GeoJSON e importação segura de shapefile, cobrança transacional, criação idempotente de `MapJob` e seleção de cenas
 no Copernicus STAC. Download, recorte raster, máscaras e cálculo vetorizado de NDVI estão integrados;
 renderização cartográfica, persistência privada e captura de créditos também estão operacionais.
 
 ## Visão geral
 
 ```text
-React + Vite
-      ↓ HTTP /api/v1
-Django REST Framework
+Django Templates + HTMX
+      ↓ views e partials
+Django + GeoDjango
       ↓
 PostgreSQL + PostGIS
 
@@ -23,8 +23,8 @@ Django ──enfileira──→ Celery ──broker/resultados──→ Redis
                            └── produtos finais ──→ MinIO (S3)
 ```
 
-O frontend usa TanStack Query para estado de servidor, React Router para navegação e MapLibre para
-os fluxos cartográficos futuros. O backend expõe OpenAPI por `drf-spectacular`. Arquivos finais usam
+O navegador usa sessão Django, CSRF e partials HTMX para filtros, paginação, ações e atualização
+dos jobs. Não há uma API pública ou autenticação paralela por tokens. Arquivos finais usam
 a abstração `STORAGES` do Django; nenhum código de domínio depende diretamente do SDK do MinIO.
 
 ## Multitenancy
@@ -36,7 +36,6 @@ primeiro da cadeia para que toda consulta posterior use o `search_path` correto.
 
 - `Tenant` e `Domain`;
 - `User` e `Membership`;
-- blacklist e rastreamento de refresh tokens JWT;
 - autenticação, sessões e administração;
 - metadados globais da plataforma.
 
@@ -50,7 +49,7 @@ e não ao usuário.
 - `CreditAccount`, `CreditTransaction` e `ProcessingPrice`.
 
 O isolamento primário acontece no banco: tabelas operacionais de organizações diferentes residem em
-schemas diferentes. Views futuras ainda devem filtrar por autorização/membership e responder `404`
+schemas diferentes. As views também filtram por autorização/membership e respondem `404`
 para UUIDs externos ao tenant atual.
 
 ## Decisões iniciais
@@ -73,7 +72,7 @@ para UUIDs externos ao tenant atual.
 ## Fluxo de geração
 
 ```text
-Request validada
+Formulário validado
       ↓
 Reserva idempotente de crédito + MapJob
       ↓

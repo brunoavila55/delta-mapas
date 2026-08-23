@@ -3,7 +3,7 @@ from __future__ import annotations
 from django.db import transaction
 from django.utils import timezone
 
-from apps.billing.services import release_reserved_credits
+from apps.billing.services import capture_reserved_credits, release_reserved_credits
 
 from ..exceptions import MapJobTransitionConflict
 from ..models import MapJob
@@ -20,7 +20,13 @@ def cancel_map_job(*, job_id, cancelled_by) -> tuple[MapJob, bool]:
             "Somente processamentos ainda ativos podem ser cancelados."
         )
 
-    release_reserved_credits(map_job=job, created_by=cancelled_by)
+    refundable_statuses = {MapJob.Status.PENDING, MapJob.Status.SEARCHING_SCENE}
+    if job.status in refundable_statuses:
+        release_reserved_credits(map_job=job, created_by=cancelled_by)
+    else:
+        # Provider processing/download cost has already started; cancellation is
+        # still accepted, but the reserved credit is no longer refundable.
+        capture_reserved_credits(map_job=job, created_by=cancelled_by)
     job.status = MapJob.Status.CANCELLED
     job.current_step = "Processamento cancelado"
     job.error_code = ""

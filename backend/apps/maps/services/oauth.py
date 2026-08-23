@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
 from dataclasses import dataclass
@@ -61,29 +62,65 @@ class OAuthTokenProvider:
                     },
                     headers={"Content-Type": "application/x-www-form-urlencoded"},
                     timeout=settings.COPERNICUS_AUTH_TIMEOUT_SECONDS,
+                    stream=True,
+                    allow_redirects=False,
                 )
             except requests.RequestException as exc:
                 raise CopernicusAuthenticationUnavailable(
                     "O serviço de autenticação do Copernicus está indisponível."
                 ) from exc
 
-            if response.status_code == 429 or response.status_code >= 500:
-                raise CopernicusAuthenticationUnavailable(
-                    "O serviço de autenticação do Copernicus está indisponível."
-                )
-            if response.status_code >= 400:
-                raise CopernicusAuthenticationError(
-                    "As credenciais OAuth do Copernicus foram recusadas."
-                )
-
             try:
-                payload = response.json()
+                if response.status_code == 429 or response.status_code >= 500:
+                    raise CopernicusAuthenticationUnavailable(
+                        "O serviço de autenticação do Copernicus está indisponível."
+                    )
+                if response.status_code >= 300:
+                    raise CopernicusAuthenticationError(
+                        "As credenciais OAuth do Copernicus foram recusadas."
+                    )
+
+                maximum_bytes = settings.COPERNICUS_AUTH_MAX_RESPONSE_BYTES
+                content_length = response.headers.get("Content-Length")
+                if content_length:
+                    try:
+                        declared_bytes = int(content_length)
+                    except ValueError as exc:
+                        raise CopernicusAuthenticationError(
+                            "A resposta de autenticação do Copernicus é inválida."
+                        ) from exc
+                    if declared_bytes < 0 or declared_bytes > maximum_bytes:
+                        raise CopernicusAuthenticationError(
+                            "A resposta de autenticação do Copernicus excede o limite."
+                        )
+                body = bytearray()
+                for chunk in response.iter_content(chunk_size=8192):
+                    if not chunk:
+                        continue
+                    body.extend(chunk)
+                    if len(body) > maximum_bytes:
+                        raise CopernicusAuthenticationError(
+                            "A resposta de autenticação do Copernicus excede o limite."
+                        )
+                payload = json.loads(body.decode("utf-8"))
                 token_value = payload["access_token"]
                 expires_in = int(payload["expires_in"])
-            except (KeyError, TypeError, ValueError) as exc:
+            except requests.RequestException as exc:
+                raise CopernicusAuthenticationUnavailable(
+                    "O serviço de autenticação do Copernicus está indisponível."
+                ) from exc
+            except (
+                KeyError,
+                TypeError,
+                ValueError,
+                UnicodeDecodeError,
+                json.JSONDecodeError,
+            ) as exc:
                 raise CopernicusAuthenticationError(
                     "A resposta de autenticação do Copernicus é inválida."
                 ) from exc
+            finally:
+                response.close()
 
             if not isinstance(token_value, str) or not token_value or expires_in <= 0:
                 raise CopernicusAuthenticationError(

@@ -1,0 +1,14 @@
+<section id="property-list" class="result-region">
+  <div class="result-meta"><strong>{{ page_obj.paginator.count }}</strong> área{{ page_obj.paginator.count|pluralize }} cadastrada{{ page_obj.paginator.count|pluralize }}</div>
+  {% if page_obj %}<div class="property-grid">
+    {% for property in page_obj %}<article class="property-card">
+      <div class="property-topography"><span></span><i></i><b>{{ property.state|default:'BR' }}</b></div>
+      <div class="property-body">
+        <div class="property-title"><div><span class="eyebrow">{{ property.city|default:'Local não informado' }}{% if property.state %} · {{ property.state }}{% endif %}</span><h2>{{ property.name }}</h2></div><span class="area-pill">{{ property.area_hectares|floatformat:1 }} ha</span></div>
+        <p>{{ property.description|default:'Área pronta para novos processamentos Sentinel-2.'|truncatechars:100 }}</p>
+        <footer><small>Atualizada {{ property.updated_at|date:'d/m/Y' }}</small>{% if request.membership.role != 'VIEWER' %}<div><a href="{% url 'web:property_edit' property.id %}">Editar</a><form method="post" action="{% url 'web:property_delete' property.id %}" hx-post="{% url 'web:property_delete' property.id %}" hx-target="closest article" hx-swap="delete" hx-confirm="Excluir {{ property.name }}? Esta ação não poderá ser desfeita.">{% csrf_token %}<button type="submit">Excluir</button></form></div>{% endif %}</footer>
+      </div>
+    </article>{% endfor %}
+  </div>{% else %}<section class="empty-panel"><span class="empty-icon">◇</span><h2>Nenhuma propriedade encontrada</h2><p>{% if search %}Tente outro termo ou limpe a busca.{% else %}Cadastre a primeira área para começar a gerar mapas.{% endif %}</p>{% if request.membership.role != 'VIEWER' %}<a class="button button-primary" href="{% url 'web:property_create' %}">Cadastrar propriedade</a>{% endif %}</section>{% endif %}
+  {% include 'web/partials/pagination.html' with hx_target='#property-list' %}
+</section>

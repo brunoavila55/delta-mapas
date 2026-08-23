@@ -1,0 +1,11 @@
+{% extends 'web/base.html' %}
+{% block title %}Propriedades · Delta Mapas{% endblock %}
+{% block section_name %}Propriedades{% endblock %}
+{% block content %}
+<header class="page-header"><div><span class="eyebrow">Território</span><h1>Propriedades</h1><p>Seu inventário de áreas agrícolas e geometrias monitoradas.</p></div>{% if request.membership.role != 'VIEWER' %}<a class="button button-primary" href="{% url 'web:property_create' %}"><span>＋</span> Nova propriedade</a>{% endif %}</header>
+<form class="filter-bar" method="get" action="{% url 'web:properties' %}" hx-get="{% url 'web:properties' %}" hx-target="#property-list" hx-swap="outerHTML" hx-push-url="true" hx-trigger="submit, change from:select, input changed delay:450ms from:#property-search">
+  <label class="search-box"><span>⌕</span><input id="property-search" name="search" value="{{ search }}" placeholder="Buscar nome, município ou estado" autocomplete="off"></label>
+  <label class="select-box"><span>Ordenar por</span><select name="ordering"><option value="name" {% if ordering == 'name' %}selected{% endif %}>Nome A–Z</option><option value="-name" {% if ordering == '-name' %}selected{% endif %}>Nome Z–A</option><option value="-created_at" {% if ordering == '-created_at' %}selected{% endif %}>Mais recentes</option><option value="-area_hectares" {% if ordering == '-area_hectares' %}selected{% endif %}>Maior área</option></select></label>
+</form>
+{% include 'web/partials/property_list.html' %}
+{% endblock %}

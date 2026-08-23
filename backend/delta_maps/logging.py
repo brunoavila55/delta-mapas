@@ -21,6 +21,13 @@ class JsonFormatter(logging.Formatter):
         "user_id",
         "stac_item_id",
         "celery_task_id",
+        "alert_type",
+        "alert_delivery",
+        "tenant_count",
+        "expired_jobs",
+        "missing_files",
+        "orphan_objects",
+        "failed_tenants",
     )
 
     def format(self, record: logging.LogRecord) -> str:

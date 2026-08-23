@@ -26,6 +26,12 @@ from .exceptions import (
 )
 from .models import MapJob
 from .services.copernicus import CopernicusScene, CopernicusSceneService
+from .services.alerts import (
+    build_reconciliation_alert,
+    build_reconciliation_failure_alert,
+    deliver_operations_alert,
+)
+from .services.operations import reconcile_all_tenants as run_reconciliation
 from .services.pipeline import process_scene_index
 from .services.products import persist_generated_map
 from .services.rendering import render_index_map
@@ -36,6 +42,56 @@ logger = logging.getLogger(__name__)
 @shared_task(name="maps.healthcheck")
 def healthcheck() -> str:
     return "ok"
+
+
+@shared_task(name="maps.reconcile_all_tenants")
+def reconcile_all_tenants() -> dict:
+    try:
+        report = run_reconciliation()
+    except Exception as exc:
+        payload = build_reconciliation_failure_alert(type(exc).__name__)
+        delivery = deliver_operations_alert(payload)
+        logger.exception(
+            "Scheduled map reconciliation failed",
+            extra={
+                "alert_type": payload["event"],
+                "alert_delivery": delivery.status,
+            },
+        )
+        raise
+
+    if report.skipped_locked:
+        logger.info(
+            "Scheduled map reconciliation skipped because another run is active"
+        )
+        return {"status": "skipped_locked"}
+
+    totals = report.totals
+    payload = build_reconciliation_alert(report)
+    delivery = deliver_operations_alert(payload) if payload else None
+    log_extra = {
+        "tenant_count": totals["tenant_count"],
+        "expired_jobs": totals["expired_jobs"],
+        "missing_files": totals["missing_files"],
+        "orphan_objects": totals["orphan_objects"],
+        "failed_tenants": totals["failed_tenants"],
+    }
+    if payload and delivery:
+        log_extra.update(
+            {
+                "alert_type": payload["event"],
+                "alert_delivery": delivery.status,
+            }
+        )
+        logger.warning("Scheduled map reconciliation found anomalies", extra=log_extra)
+    else:
+        logger.info("Scheduled map reconciliation completed", extra=log_extra)
+
+    return {
+        "status": "issues" if payload else "ok",
+        "totals": totals,
+        "alert_delivery": delivery.status if delivery else "not_required",
+    }
 
 
 def _start_scene_search(job_id: str, celery_task_id: str | None) -> MapJob:

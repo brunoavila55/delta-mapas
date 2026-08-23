@@ -1,0 +1,18 @@
+{% load web_tags %}
+<article class="job-row" id="job-{{ job.id }}">
+  {% if action_message %}<div class="inline-success">{{ action_message }}</div>{% endif %}
+  <div class="job-main">
+    <div class="job-id"><span>N</span><small>#{{ job.id|stringformat:'s'|slice:':8' }}</small></div>
+    <div class="job-copy"><div><h2>{{ job.property.name|default:'Área avulsa' }}</h2><span class="badge badge-{{ job.status|status_tone }}">{{ job.get_status_display }}</span></div><p>{{ job.current_step|default:'Aguardando atualização do worker' }}</p><small>Solicitado {{ job.created_at|date:'d/m/Y \à\s H:i' }} · {{ job.credit_cost }} crédito{{ job.credit_cost|pluralize }}</small></div>
+    <div class="job-actions">
+      {% if job.generated_map %}<a href="{% url 'web:maps' %}?search={{ job.property.name|urlencode }}">Ver mapa</a>{% endif %}
+      {% if request.membership.role != 'VIEWER' %}
+        {% if job.status == 'COMPLETED' or job.status == 'FAILED' or job.status == 'CANCELLED' %}<form method="post" action="{% url 'web:job_reprocess' job.id %}" hx-post="{% url 'web:job_reprocess' job.id %}" hx-confirm="Reprocessar este pedido e reservar {{ job.credit_cost }} crédito(s)?">{% csrf_token %}<button type="submit">Reprocessar</button></form>
+        {% else %}<form method="post" action="{% url 'web:job_cancel' job.id %}" hx-post="{% url 'web:job_cancel' job.id %}" hx-target="#job-{{ job.id }}" hx-swap="outerHTML" hx-confirm="Cancelar este processamento? A devolução depende da etapa atual.">{% csrf_token %}<button class="danger-link" type="submit">Cancelar</button></form>{% endif %}
+      {% endif %}
+    </div>
+  </div>
+  <div class="progress-track"><span class="progress-{{ job.status|lower }}" style="width:{{ job.progress }}%"></span></div>
+  <div class="job-foot"><strong>{{ job.progress }}%</strong><span>{% if job.date_from %}{{ job.date_from|date:'d/m/Y' }} → {{ job.date_to|date:'d/m/Y' }}{% else %}Cena {{ job.requested_scene_date|date:'d/m/Y' }}{% endif %}</span></div>
+  {% if job.error_message %}<div class="job-error"><strong>{{ job.error_code }}</strong>{{ job.error_message }}</div>{% endif %}
+</article>

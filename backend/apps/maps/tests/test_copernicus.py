@@ -7,7 +7,9 @@ from django.contrib.gis.geos import MultiPolygon, Polygon
 from django.test import SimpleTestCase, override_settings
 
 from apps.maps.exceptions import NoSatelliteSceneFound, SatelliteCatalogError
-from apps.maps.services.copernicus import CopernicusSceneService
+from pystac_client.exceptions import APIError
+
+from apps.maps.services.copernicus import BoundedStacApiIO, CopernicusSceneService
 
 
 FULL_TILE_GEOMETRY = {
@@ -64,6 +66,27 @@ class CopernicusSceneServiceTests(SimpleTestCase):
             srid=4326,
         )
         self.geometry = MultiPolygon(polygon, srid=4326)
+
+    @override_settings(
+        COPERNICUS_STAC_MAX_RESPONSE_BYTES=8,
+        COPERNICUS_STAC_MAX_TOTAL_BYTES=12,
+    )
+    def test_bounded_transport_rejects_large_pages_and_redirects(self):
+        response = Mock(
+            status_code=200,
+            headers={},
+        )
+        response.iter_content.return_value = [b"123456789"]
+        transport = BoundedStacApiIO(timeout=12)
+        transport.session.request = Mock(return_value=response)
+
+        with self.assertRaises(APIError):
+            transport.request("https://stac.example.test/search")
+
+        response.close.assert_called_once()
+        kwargs = transport.session.request.call_args.kwargs
+        self.assertTrue(kwargs["stream"])
+        self.assertFalse(kwargs["allow_redirects"])
 
     def service_with_items(self, items):
         search = Mock()

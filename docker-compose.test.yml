@@ -1,0 +1,6 @@
+services:
+  minio:
+    ports: !reset []
+  backend:
+    ports: !override
+      - "8010:8000"

@@ -1,0 +1,29 @@
+{% extends 'web/base.html' %}
+{% block title %}{% if property %}Editar{% else %}Nova{% endif %} propriedade · Delta Mapas{% endblock %}
+{% block section_name %}Propriedades{% endblock %}
+{% block content %}
+<header class="page-header"><div><a class="back-link" href="{% url 'web:properties' %}">← Voltar para propriedades</a><span class="eyebrow">Cadastro territorial</span><h1>{% if property %}Editar {{ property.name }}{% else %}Nova propriedade{% endif %}</h1><p>Identifique a área e envie sua delimitação geográfica.</p></div></header>
+<form method="post" enctype="multipart/form-data" class="form-layout" novalidate>{% csrf_token %}
+  <section class="form-card">
+    <header><span class="step-number">01</span><div><h2>Identificação</h2><p>Como esta área aparecerá em toda a plataforma.</p></div></header>
+    {% if form.non_field_errors %}<div class="form-alert">{{ form.non_field_errors|striptags }}</div>{% endif %}
+    <div class="form-grid">
+      <label class="form-field form-span-2"><span>{{ form.name.label }}</span>{{ form.name }}{% for error in form.name.errors %}<small class="field-error">{{ error }}</small>{% endfor %}</label>
+      <label class="form-field"><span>{{ form.city.label }}</span>{{ form.city }}{% for error in form.city.errors %}<small class="field-error">{{ error }}</small>{% endfor %}</label>
+      <label class="form-field"><span>{{ form.state.label }}</span>{{ form.state }}{% for error in form.state.errors %}<small class="field-error">{{ error }}</small>{% endfor %}</label>
+      <label class="form-field"><span>{{ form.country.label }}</span>{{ form.country }}{% for error in form.country.errors %}<small class="field-error">{{ error }}</small>{% endfor %}</label>
+      <label class="form-field form-span-2"><span>{{ form.description.label }}</span>{{ form.description }}{% for error in form.description.errors %}<small class="field-error">{{ error }}</small>{% endfor %}</label>
+    </div>
+  </section>
+  <section class="form-card">
+    <header><span class="step-number">02</span><div><h2>Geometria</h2><p>Use uma das duas formas de entrada. O sistema normaliza tudo para EPSG:4326.</p></div></header>
+    <div class="source-grid">
+      <label class="upload-zone"><span class="upload-icon">⇧</span><strong>Importar shapefile</strong><small>Arquivo ZIP com .shp, .shx, .dbf e .prj</small>{{ form.shapefile }}</label>
+      <div class="source-divider"><span>ou</span></div>
+      <label class="form-field geojson-field"><span>Colar GeoJSON</span>{{ form.geometry }}<small>Polygon ou MultiPolygon em coordenadas geográficas.</small></label>
+    </div>
+    {% for error in form.shapefile.errors %}<div class="field-error block-error">{{ error }}</div>{% endfor %}{% for error in form.geometry.errors %}<div class="field-error block-error">{{ error }}</div>{% endfor %}
+  </section>
+  <aside class="form-aside"><div class="aside-note"><span>✓</span><div><strong>Validação automática</strong><p>Projeção, limites, complexidade e área são verificados antes de salvar.</p></div></div><button class="button button-primary button-block" type="submit">{% if property %}Salvar alterações{% else %}Cadastrar propriedade{% endif %} <span>→</span></button><a class="button button-ghost button-block" href="{% url 'web:properties' %}">Cancelar</a></aside>
+</form>
+{% endblock %}

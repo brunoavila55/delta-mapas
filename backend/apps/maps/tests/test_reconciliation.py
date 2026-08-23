@@ -18,6 +18,7 @@ from apps.maps.services.reconciliation import (
     expire_stalled_jobs,
     reconcile_generated_map_storage,
 )
+from apps.maps.services.operations import reconcile_all_tenants
 from apps.properties.models import Property
 
 
@@ -193,3 +194,30 @@ class MapReconciliationTests(TenantTestCase):
         self.assertEqual(len(missing.missing_files), 1)
         self.assertEqual(missing.missing_files[0].generated_map_id, generated_map.id)
         self.assertEqual(missing.missing_files[0].field_name, "pdf_file")
+
+    @override_settings(
+        MAP_RECONCILIATION_APPLY_STALLED=True,
+        MAP_RECONCILIATION_DELETE_ORPHANS=False,
+        MAP_JOB_STALE_MINUTES=120,
+    )
+    def test_scheduled_reconciliation_runs_all_tenants_and_expires_stalled_job(self):
+        job = self._job(heartbeat_at=timezone.now() - timedelta(hours=3))
+        reserve_credits(
+            map_job=job,
+            amount=1,
+            idempotency_key=f"map-job:{job.id}:reserve",
+            created_by=self.user,
+        )
+
+        report = reconcile_all_tenants()
+
+        job.refresh_from_db()
+        tenant_report = next(
+            item for item in report.tenants if item.tenant_id == self.tenant.id
+        )
+        self.assertFalse(report.skipped_locked)
+        self.assertEqual(tenant_report.stalled_candidates, 1)
+        self.assertEqual(tenant_report.expired_jobs, 1)
+        self.assertEqual(tenant_report.errors, ())
+        self.assertEqual(job.status, MapJob.Status.FAILED)
+        self.assertEqual(job.error_code, "JOB_STALLED")

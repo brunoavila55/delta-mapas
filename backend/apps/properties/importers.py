@@ -13,6 +13,7 @@ from shapely.geometry import GeometryCollection, MultiPolygon as ShapelyMultiPol
 from shapely.geometry import Polygon as ShapelyPolygon
 
 from .exceptions import InvalidShapefile
+from .geometry_limits import validate_shapely_complexity
 from .services import normalize_multipolygon, validate_area_limit
 
 ALLOWED_EXTENSIONS = {
@@ -141,7 +142,12 @@ def _polygon_parts(geometry) -> list[ShapelyPolygon]:
 
 def _read_geometry(shapefile: Path) -> MultiPolygon:
     try:
-        frame = gpd.read_file(shapefile, columns=[], engine="pyogrio")
+        frame = gpd.read_file(
+            shapefile,
+            columns=[],
+            engine="pyogrio",
+            rows=slice(0, settings.SHAPEFILE_MAX_FEATURES + 1),
+        )
     except Exception as exc:
         raise InvalidShapefile("Não foi possível ler o shapefile enviado.") from exc
     if frame.crs is None:
@@ -160,12 +166,15 @@ def _read_geometry(shapefile: Path) -> MultiPolygon:
     for geometry in frame.geometry:
         if geometry is None or geometry.is_empty:
             continue
+        validate_shapely_complexity(geometry)
         repaired = make_valid(geometry) if not geometry.is_valid else geometry
+        validate_shapely_complexity(repaired)
         polygons.extend(_polygon_parts(repaired))
     if not polygons:
         raise InvalidShapefile("O shapefile não contém geometrias poligonais válidas.")
 
     merged = union_all(polygons)
+    validate_shapely_complexity(merged)
     try:
         geometry = GEOSGeometry(to_geojson(merged), srid=4326)
         normalized = normalize_multipolygon(geometry)

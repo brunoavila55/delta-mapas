@@ -1,0 +1,9 @@
+[Unit]
+Description=Backup verificado do Delta Mapas
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/delta-mapas
+ExecStart=/usr/bin/docker compose --env-file .env.prod -f docker-compose.prod.yml --profile ops run --rm backup

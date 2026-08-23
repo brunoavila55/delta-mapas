@@ -6,8 +6,11 @@ from datetime import date, datetime, time, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable
 
+import requests
 from django.conf import settings
 from pystac_client import Client
+from pystac_client.exceptions import APIError
+from pystac_client.stac_api_io import StacApiIO
 from shapely.geometry.base import BaseGeometry
 from shapely.geometry import shape as shapely_shape
 
@@ -18,6 +21,58 @@ REQUIRED_ASSET_ALIASES: dict[str, tuple[str, ...]] = {
     "B08": ("B08_10m", "B08"),
     "SCL": ("SCL_20m", "SCL"),
 }
+
+
+class BoundedStacApiIO(StacApiIO):
+    def __init__(self, *, timeout: float) -> None:
+        super().__init__(timeout=timeout, max_retries=0)
+        self._remaining_bytes = settings.COPERNICUS_STAC_MAX_TOTAL_BYTES
+
+    def request(self, href, method=None, headers=None, parameters=None):
+        request_method = method or "GET"
+        kwargs: dict[str, object] = {
+            "headers": headers,
+            "timeout": self.timeout,
+            "stream": True,
+            "allow_redirects": False,
+        }
+        if request_method == "POST":
+            kwargs["json"] = parameters
+        else:
+            kwargs["params"] = parameters
+        try:
+            response = self.session.request(request_method, href, **kwargs)
+        except requests.RequestException as exc:
+            raise APIError(str(exc)) from exc
+        try:
+            if response.status_code != 200:
+                raise APIError(f"STAC API returned HTTP {response.status_code}.")
+            page_limit = settings.COPERNICUS_STAC_MAX_RESPONSE_BYTES
+            content_length = response.headers.get("Content-Length")
+            if content_length:
+                try:
+                    declared_bytes = int(content_length)
+                except ValueError as exc:
+                    raise APIError(
+                        "STAC API returned an invalid Content-Length."
+                    ) from exc
+                if declared_bytes < 0 or declared_bytes > page_limit:
+                    raise APIError("STAC API response exceeds the per-page limit.")
+            body = bytearray()
+            for chunk in response.iter_content(chunk_size=64 * 1024):
+                if not chunk:
+                    continue
+                body.extend(chunk)
+                if len(body) > page_limit:
+                    raise APIError("STAC API response exceeds the per-page limit.")
+                if len(body) > self._remaining_bytes:
+                    raise APIError("STAC API responses exceed the aggregate limit.")
+            self._remaining_bytes -= len(body)
+            return body.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise APIError("STAC API response is not valid UTF-8.") from exc
+        finally:
+            response.close()
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,7 +147,7 @@ class CopernicusSceneService:
     def __init__(
         self,
         *,
-        client_factory: Callable[..., Any] = Client.open,
+        client_factory: Callable[..., Any] | None = None,
     ) -> None:
         self.client_factory = client_factory
 
@@ -114,10 +169,18 @@ class CopernicusSceneService:
         aoi_shape = shapely_shape(intersects)
 
         try:
-            client = self.client_factory(
-                settings.COPERNICUS_STAC_URL,
-                timeout=settings.COPERNICUS_STAC_TIMEOUT_SECONDS,
-            )
+            if self.client_factory is None:
+                timeout = settings.COPERNICUS_STAC_TIMEOUT_SECONDS
+                client = Client.open(
+                    settings.COPERNICUS_STAC_URL,
+                    timeout=timeout,
+                    stac_io=BoundedStacApiIO(timeout=timeout),
+                )
+            else:
+                client = self.client_factory(
+                    settings.COPERNICUS_STAC_URL,
+                    timeout=settings.COPERNICUS_STAC_TIMEOUT_SECONDS,
+                )
             search = client.search(
                 collections=[settings.COPERNICUS_STAC_COLLECTION],
                 intersects=intersects,
