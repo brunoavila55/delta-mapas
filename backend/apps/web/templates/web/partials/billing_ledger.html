@@ -1,0 +1,4 @@
+<div id="billing-ledger">
+  {% if page_obj %}<div class="table-wrap"><table class="data-table"><thead><tr><th>Evento</th><th>Data e hora</th><th>Valor</th><th>Disponível após</th><th>Reservado após</th><th>Referência</th></tr></thead><tbody>{% for transaction in page_obj %}<tr><td><span class="ledger-event ledger-{{ transaction.transaction_type|lower }}">{{ transaction.get_transaction_type_display }}</span></td><td>{{ transaction.created_at|date:'d/m/Y H:i' }}</td><td><strong>{{ transaction.amount }}</strong></td><td>{{ transaction.available_balance_after }}</td><td>{{ transaction.reserved_balance_after }}</td><td><code>{% if transaction.map_job_id %}{{ transaction.map_job_id|stringformat:'s'|slice:':8' }}{% else %}—{% endif %}</code></td></tr>{% endfor %}</tbody></table></div>{% else %}<div class="compact-empty"><p>Nenhuma movimentação corresponde ao filtro.</p></div>{% endif %}
+  {% include 'web/partials/pagination.html' with hx_target='#billing-ledger' %}
+</div>

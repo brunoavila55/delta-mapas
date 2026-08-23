@@ -177,6 +177,7 @@ class SentinelHubProcessClient:
                 },
                 timeout=settings.COPERNICUS_PROCESS_TIMEOUT_SECONDS,
                 stream=True,
+                allow_redirects=False,
             )
         except requests.RequestException as exc:
             raise SatelliteProcessUnavailable(
@@ -197,7 +198,7 @@ class SentinelHubProcessClient:
             raise SatelliteProcessUnavailable(
                 "A Sentinel Hub Process API está temporariamente indisponível."
             )
-        if response.status_code >= 400:
+        if response.status_code >= 300:
             response.close()
             raise SatelliteProcessRejected(
                 "A Sentinel Hub Process API recusou a solicitação raster."

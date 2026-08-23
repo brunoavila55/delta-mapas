@@ -1,0 +1,37 @@
+{% extends 'web/base.html' %}
+{% load web_tags %}
+{% block title %}Visão geral · Delta Mapas{% endblock %}
+{% block section_name %}Visão geral{% endblock %}
+{% block content %}
+<header class="page-header hero-header">
+  <div><span class="eyebrow">{{ request.tenant.name }}</span><h1>Bom trabalho, {{ request.user.first_name|default:request.user.username }}.</h1><p>A operação do seu território, resumida em um só lugar.</p></div>
+  {% if request.membership.role != 'VIEWER' %}<a class="button button-primary" href="{% url 'web:job_create' %}"><span>＋</span> Novo mapa NDVI</a>{% endif %}
+</header>
+
+<section class="metric-grid">
+  <article class="metric-card metric-featured"><span class="metric-label">Créditos disponíveis</span><strong>{{ account.available_balance }}</strong><small>{{ account.reserved_balance }} reservado{{ account.reserved_balance|pluralize }}</small><i class="metric-art"></i></article>
+  <article class="metric-card"><span class="metric-symbol">◇</span><span class="metric-label">Área monitorada</span><strong>{{ total_area|floatformat:1 }} <small>ha</small></strong><p>{{ property_count }} propriedade{{ property_count|pluralize }}</p></article>
+  <article class="metric-card"><span class="metric-symbol">◌</span><span class="metric-label">Em processamento</span><strong>{{ active_job_count }}</strong><p>pipeline ativo agora</p></article>
+  <article class="metric-card"><span class="metric-symbol">▧</span><span class="metric-label">Mapas entregues</span><strong>{{ map_count }}</strong><p>produtos disponíveis</p></article>
+</section>
+
+<section class="dashboard-grid">
+  <div class="panel">
+    <header class="panel-header"><div><span class="eyebrow">Atividade</span><h2>Processamentos recentes</h2></div><a href="{% url 'web:jobs' %}">Ver todos →</a></header>
+    {% if recent_jobs %}<div class="activity-list">
+      {% for job in recent_jobs %}<article class="activity-row">
+        <span class="activity-monogram">N</span>
+        <div><strong>{{ job.property.name|default:'Área avulsa' }}</strong><small>{{ job.current_step|default:'Aguardando atualização' }}</small></div>
+        <span class="badge badge-{{ job.status|status_tone }}">{{ job.get_status_display }}</span>
+        <time>{{ job.created_at|date:'d M, H:i' }}</time>
+      </article>{% endfor %}
+    </div>{% else %}<div class="compact-empty"><p>Nenhum processamento iniciado.</p><a href="{% url 'web:job_create' %}">Gerar o primeiro mapa</a></div>{% endif %}
+  </div>
+  <aside class="panel field-note">
+    <span class="eyebrow">Leitura rápida</span><h2>Do satélite à decisão</h2>
+    <div class="orbit-art"><span></span><i></i><b>NDVI</b></div>
+    <p>Cada mapa combina a cena com menor cobertura de nuvens, a geometria da propriedade e uma legenda cartográfica pronta para campo.</p>
+    <a href="{% url 'web:maps' %}">Abrir biblioteca de mapas →</a>
+  </aside>
+</section>
+{% endblock %}

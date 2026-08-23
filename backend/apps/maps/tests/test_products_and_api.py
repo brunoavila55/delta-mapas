@@ -6,9 +6,8 @@ from tempfile import TemporaryDirectory
 from django.contrib.auth import get_user_model
 from django.contrib.gis.geos import MultiPolygon, Polygon
 from django.db import connection
-from django.test import override_settings
+from django.test import Client, override_settings
 from django_tenants.test.cases import TenantTestCase
-from rest_framework.test import APIClient
 
 from apps.accounts.models import Membership
 from apps.billing.models import CreditAccount, CreditTransaction
@@ -61,8 +60,8 @@ class GeneratedMapProductTests(TenantTestCase):
             tenant=self.tenant,
             role=Membership.Role.OWNER,
         )
-        self.client = APIClient(HTTP_HOST=self.get_test_tenant_domain())
-        self.client.force_authenticate(self.user)
+        self.client = Client(HTTP_HOST=self.get_test_tenant_domain())
+        self.client.force_login(self.user)
         self.account = CreditAccount.objects.create(
             singleton_key=True,
             available_balance=5,
@@ -179,7 +178,7 @@ class GeneratedMapProductTests(TenantTestCase):
             ).exists()
         )
 
-    def test_lists_retrieves_and_downloads_private_products(self):
+    def test_web_lists_and_downloads_private_products(self):
         generated = persist_generated_map(
             job=self.job,
             scene=self.scene,
@@ -187,18 +186,13 @@ class GeneratedMapProductTests(TenantTestCase):
             pipeline_metadata={"index": "NDVI"},
         )
 
-        listing = self.client.get(
-            f"/api/v1/maps/?search={self.scene.item_id}&page_size=1&ordering=-scene_date"
-        )
-        detail = self.client.get(f"/api/v1/maps/{generated.id}/")
-        png = self.client.get(f"/api/v1/maps/{generated.id}/download/png/")
-        pdf = self.client.get(f"/api/v1/maps/{generated.id}/download/pdf/")
+        listing = self.client.get(f"/maps/?search={self.scene.item_id}")
+        png = self.client.get(f"/maps/{generated.id}/png/")
+        pdf = self.client.get(f"/maps/{generated.id}/pdf/")
 
         self.assertEqual(listing.status_code, 200)
-        self.assertEqual(listing.data["count"], 1)
-        self.assertEqual(detail.status_code, 200)
-        self.assertEqual(detail.data["job_id"], self.job.id)
-        self.assertIn("/download/png/", detail.data["png_download_url"])
+        self.assertContains(listing, self.property.name)
+        self.assertContains(listing, f"/maps/{generated.id}/png/")
         self.assertEqual(png.status_code, 200)
         self.assertEqual(png["Content-Type"], "image/png")
         self.assertTrue(b"".join(png.streaming_content).startswith(b"\x89PNG"))

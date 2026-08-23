@@ -1,0 +1,309 @@
+name: delta-mapas-prod
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "5"
+
+x-backend-environment: &backend-environment
+  DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Defina DJANGO_SECRET_KEY em .env.prod}
+  DJANGO_DEBUG: "false"
+  DJANGO_ALLOWED_HOSTS: ${APP_DOMAIN:?Defina APP_DOMAIN em .env.prod},backend,localhost
+  DJANGO_CSRF_TRUSTED_ORIGINS: https://${APP_DOMAIN:?Defina APP_DOMAIN em .env.prod}
+  DJANGO_SECURE_COOKIES: "true"
+  DJANGO_SECURE_SSL_REDIRECT: "true"
+  DJANGO_TRUST_PROXY_HEADERS: "true"
+  DJANGO_SECURE_HSTS_SECONDS: ${DJANGO_SECURE_HSTS_SECONDS:-31536000}
+  DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS: ${DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS:-false}
+  DJANGO_SECURE_HSTS_PRELOAD: ${DJANGO_SECURE_HSTS_PRELOAD:-false}
+  SHOW_PUBLIC_IF_NO_TENANT_FOUND: "false"
+  POSTGRES_DB: ${POSTGRES_DB:-delta_maps}
+  POSTGRES_USER: ${POSTGRES_USER:-delta_maps}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD em .env.prod}
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: 5432
+  POSTGRES_CONN_MAX_AGE: ${POSTGRES_CONN_MAX_AGE:-60}
+  REDIS_URL: redis://redis:6379/0
+  DJANGO_CACHE_URL: redis://redis:6379/1
+  LOGIN_IP_THROTTLE_RATE: ${LOGIN_IP_THROTTLE_RATE:-20/min}
+  LOGIN_ACCOUNT_THROTTLE_RATE: ${LOGIN_ACCOUNT_THROTTLE_RATE:-5/min}
+  MINIO_STORAGE_ENABLED: "true"
+  MINIO_ENDPOINT: minio:9000
+  MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?Defina MINIO_ACCESS_KEY em .env.prod}
+  MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?Defina MINIO_SECRET_KEY em .env.prod}
+  MINIO_BUCKET: ${MINIO_BUCKET:-delta-mapas}
+  MINIO_USE_SSL: "false"
+  COPERNICUS_STAC_URL: ${COPERNICUS_STAC_URL:-https://stac.dataspace.copernicus.eu/v1/}
+  COPERNICUS_STAC_COLLECTION: ${COPERNICUS_STAC_COLLECTION:-sentinel-2-l2a}
+  COPERNICUS_STAC_TIMEOUT_SECONDS: ${COPERNICUS_STAC_TIMEOUT_SECONDS:-30}
+  COPERNICUS_STAC_MAX_ITEMS: ${COPERNICUS_STAC_MAX_ITEMS:-100}
+  COPERNICUS_STAC_MAX_RETRIES: ${COPERNICUS_STAC_MAX_RETRIES:-2}
+  COPERNICUS_STAC_RETRY_DELAY_SECONDS: ${COPERNICUS_STAC_RETRY_DELAY_SECONDS:-15}
+  COPERNICUS_CLIENT_ID: ${COPERNICUS_CLIENT_ID:?Defina COPERNICUS_CLIENT_ID em .env.prod}
+  COPERNICUS_CLIENT_SECRET: ${COPERNICUS_CLIENT_SECRET:?Defina COPERNICUS_CLIENT_SECRET em .env.prod}
+  COPERNICUS_TOKEN_URL: ${COPERNICUS_TOKEN_URL:-https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token}
+  COPERNICUS_PROCESS_URL: ${COPERNICUS_PROCESS_URL:-https://sh.dataspace.copernicus.eu/process/v1}
+  COPERNICUS_AUTH_TIMEOUT_SECONDS: ${COPERNICUS_AUTH_TIMEOUT_SECONDS:-30}
+  COPERNICUS_AUTH_MAX_RESPONSE_BYTES: ${COPERNICUS_AUTH_MAX_RESPONSE_BYTES:-65536}
+  COPERNICUS_PROCESS_TIMEOUT_SECONDS: ${COPERNICUS_PROCESS_TIMEOUT_SECONDS:-300}
+  COPERNICUS_TOKEN_REFRESH_LEEWAY_SECONDS: ${COPERNICUS_TOKEN_REFRESH_LEEWAY_SECONDS:-60}
+  COPERNICUS_PROCESS_MAX_RETRIES: ${COPERNICUS_PROCESS_MAX_RETRIES:-2}
+  COPERNICUS_PROCESS_RETRY_DELAY_SECONDS: ${COPERNICUS_PROCESS_RETRY_DELAY_SECONDS:-30}
+  COPERNICUS_OUTPUT_RESOLUTION_METERS: ${COPERNICUS_OUTPUT_RESOLUTION_METERS:-10}
+  COPERNICUS_MAX_OUTPUT_PIXELS: ${COPERNICUS_MAX_OUTPUT_PIXELS:-25000000}
+  COPERNICUS_MAX_DOWNLOAD_BYTES: ${COPERNICUS_MAX_DOWNLOAD_BYTES:-536870912}
+  COPERNICUS_SCENE_TIME_TOLERANCE_SECONDS: ${COPERNICUS_SCENE_TIME_TOLERANCE_SECONDS:-300}
+  COPERNICUS_STAC_MAX_RESPONSE_BYTES: ${COPERNICUS_STAC_MAX_RESPONSE_BYTES:-2097152}
+  COPERNICUS_STAC_MAX_TOTAL_BYTES: ${COPERNICUS_STAC_MAX_TOTAL_BYTES:-8388608}
+  GEOMETRY_MAX_COORDINATES: ${GEOMETRY_MAX_COORDINATES:-100000}
+  GEOMETRY_MAX_COMPONENTS: ${GEOMETRY_MAX_COMPONENTS:-1000}
+  GEOMETRY_MAX_NESTING_DEPTH: ${GEOMETRY_MAX_NESTING_DEPTH:-8}
+  MAP_RENDER_MAX_DIMENSION_PIXELS: ${MAP_RENDER_MAX_DIMENSION_PIXELS:-2400}
+  MAP_RENDER_PNG_DPI: ${MAP_RENDER_PNG_DPI:-180}
+  MAP_RENDER_PDF_DPI: ${MAP_RENDER_PDF_DPI:-150}
+  MAP_JOB_STALE_MINUTES: ${MAP_JOB_STALE_MINUTES:-120}
+  MAP_RECONCILIATION_ENABLED: ${MAP_RECONCILIATION_ENABLED:-true}
+  MAP_RECONCILIATION_INTERVAL_SECONDS: ${MAP_RECONCILIATION_INTERVAL_SECONDS:-900}
+  MAP_RECONCILIATION_APPLY_STALLED: ${MAP_RECONCILIATION_APPLY_STALLED:-true}
+  MAP_RECONCILIATION_DELETE_ORPHANS: ${MAP_RECONCILIATION_DELETE_ORPHANS:-false}
+  OPERATIONS_ALERT_WEBHOOK_URL: ${OPERATIONS_ALERT_WEBHOOK_URL:-}
+  OPERATIONS_ALERT_WEBHOOK_SECRET: ${OPERATIONS_ALERT_WEBHOOK_SECRET:-}
+  OPERATIONS_ALERT_TIMEOUT_SECONDS: ${OPERATIONS_ALERT_TIMEOUT_SECONDS:-10}
+  OPERATIONS_ALERT_COOLDOWN_SECONDS: ${OPERATIONS_ALERT_COOLDOWN_SECONDS:-21600}
+  OPERATIONS_ALERT_ALLOW_INSECURE_HTTP: "false"
+  MPLCONFIGDIR: /tmp/matplotlib
+  GUNICORN_WORKERS: ${GUNICORN_WORKERS:-3}
+  GUNICORN_THREADS: ${GUNICORN_THREADS:-2}
+  GUNICORN_TIMEOUT: ${GUNICORN_TIMEOUT:-120}
+
+x-backend-service: &backend-service
+  image: delta-mapas-backend:${APP_VERSION:-local}
+  build:
+    context: ./backend
+    dockerfile: Dockerfile.prod
+  environment: *backend-environment
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp:size=1g,mode=1777
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  logging: *default-logging
+
+services:
+  postgres:
+    image: postgis/postgis:17-3.5
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-delta_maps}
+      POSTGRES_USER: ${POSTGRES_USER:-delta_maps}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD em .env.prod}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-delta_maps} -d ${POSTGRES_DB:-delta_maps}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+    logging: *default-logging
+
+  redis:
+    image: redis:7.4-alpine
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy noeviction
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+    logging: *default-logging
+
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:?Defina MINIO_ACCESS_KEY em .env.prod}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:?Defina MINIO_SECRET_KEY em .env.prod}
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
+    restart: unless-stopped
+    logging: *default-logging
+
+  minio_init:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?Defina MINIO_ACCESS_KEY em .env.prod}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?Defina MINIO_SECRET_KEY em .env.prod}
+      MINIO_BUCKET: ${MINIO_BUCKET:-delta-mapas}
+    entrypoint: >-
+      /bin/sh -c "
+      mc alias set local http://minio:9000 $$MINIO_ACCESS_KEY $$MINIO_SECRET_KEY;
+      mc mb --ignore-existing local/$$MINIO_BUCKET;
+      mc anonymous set none local/$$MINIO_BUCKET;
+      "
+    restart: "no"
+    logging: *default-logging
+
+  migrate:
+    <<: *backend-service
+    command: >-
+      sh -c "python manage.py migrate_schemas --shared --noinput &&
+      python manage.py migrate_schemas --tenant --noinput"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  provision:
+    <<: *backend-service
+    command: python manage.py provision_tenant
+    environment:
+      <<: *backend-environment
+      TENANT_SCHEMA: ${TENANT_SCHEMA:-principal}
+      TENANT_DOMAIN: ${APP_DOMAIN:?Defina APP_DOMAIN em .env.prod}
+      TENANT_NAME: ${TENANT_NAME:-Delta Mapas}
+      SUPERUSER_USERNAME: ${SUPERUSER_USERNAME:-admin}
+      SUPERUSER_EMAIL: ${SUPERUSER_EMAIL:?Defina SUPERUSER_EMAIL em .env.prod}
+      SUPERUSER_PASSWORD: ${SUPERUSER_PASSWORD:?Defina SUPERUSER_PASSWORD em .env.prod}
+      INITIAL_CREDITS: ${INITIAL_CREDITS:-10}
+      NDVI_CREDIT_COST: ${NDVI_CREDIT_COST:-1}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  backend:
+    <<: *backend-service
+    expose:
+      - "8000"
+    depends_on:
+      provision:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      minio_init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -H 'Host: ${APP_DOMAIN:?Defina APP_DOMAIN em .env.prod}' -H 'X-Forwarded-Proto: https' http://localhost:8000/health/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  celery_worker:
+    <<: *backend-service
+    command: >-
+      sh -c "exec celery -A delta_maps worker --loglevel=INFO
+      --concurrency=$${CELERY_WORKER_CONCURRENCY:-1}"
+    environment:
+      <<: *backend-environment
+      CELERY_WORKER_CONCURRENCY: ${CELERY_WORKER_CONCURRENCY:-1}
+    depends_on:
+      provision:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      minio_init:
+        condition: service_completed_successfully
+    stop_grace_period: 2m
+    restart: unless-stopped
+
+  celery_beat:
+    <<: *backend-service
+    command: >-
+      celery -A delta_maps beat --loglevel=INFO
+      --schedule=/tmp/celerybeat-schedule
+    depends_on:
+      provision:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      minio_init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  backup:
+    profiles: ["ops"]
+    image: delta-mapas-backup:${APP_VERSION:-local}
+    build:
+      context: ./ops/backup
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-delta_maps}
+      POSTGRES_USER: ${POSTGRES_USER:-delta_maps}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD em .env.prod}
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?Defina MINIO_ACCESS_KEY em .env.prod}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?Defina MINIO_SECRET_KEY em .env.prod}
+      MINIO_BUCKET: ${MINIO_BUCKET:-delta-mapas}
+      APP_VERSION: ${APP_VERSION:-local}
+      BACKUP_SIGNING_KEY: ${BACKUP_SIGNING_KEY:?Defina BACKUP_SIGNING_KEY em .env.prod}
+      BACKUP_ENVIRONMENT: ${BACKUP_ENVIRONMENT:?Defina BACKUP_ENVIRONMENT em .env.prod}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+    volumes:
+      - ${BACKUP_DIRECTORY:-/var/backups/delta-mapas}:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio_init:
+        condition: service_completed_successfully
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging: *default-logging
+
+  proxy:
+    image: caddy:2.10-alpine
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?Defina APP_DOMAIN em .env.prod}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./ops/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  caddy_data:
+  caddy_config:

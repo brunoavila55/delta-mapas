@@ -1,0 +1,5 @@
+<section id="job-list" class="result-region" {% if has_active_jobs %}hx-get="{% url 'web:jobs' %}?{{ request.GET.urlencode }}" hx-trigger="every 5s" hx-swap="outerHTML"{% endif %}>
+  <div class="result-meta"><strong>{{ page_obj.paginator.count }}</strong> processamento{{ page_obj.paginator.count|pluralize }} {% if has_active_jobs %}<span class="live-indicator"><i></i> Atualização automática</span>{% endif %}</div>
+  {% if page_obj %}<div class="job-stack">{% for job in page_obj %}{% include 'web/partials/job_row.html' %}{% endfor %}</div>{% else %}<section class="empty-panel"><span class="empty-icon">◌</span><h2>Nenhum processamento encontrado</h2><p>Ajuste os filtros ou inicie um novo mapa NDVI.</p>{% if request.membership.role != 'VIEWER' %}<a class="button button-primary" href="{% url 'web:job_create' %}">Iniciar processamento</a>{% endif %}</section>{% endif %}
+  {% include 'web/partials/pagination.html' with hx_target='#job-list' %}
+</section>

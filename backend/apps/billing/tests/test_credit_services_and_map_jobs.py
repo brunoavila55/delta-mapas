@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,10 +10,13 @@ from django.contrib.gis.geos import MultiPolygon, Polygon
 from django.db import connection
 from django.test import override_settings
 from django_tenants.test.cases import TenantTestCase
-from rest_framework.test import APIClient
 
 from apps.accounts.models import Membership
-from apps.billing.exceptions import CreditOperationConflict, InsufficientCredits
+from apps.billing.exceptions import (
+    CreditOperationConflict,
+    InsufficientCredits,
+    ProcessingPriceNotConfigured,
+)
 from apps.billing.models import CreditAccount, CreditTransaction, ProcessingPrice
 from apps.billing.services import (
     adjust_available_credits,
@@ -23,13 +26,18 @@ from apps.billing.services import (
 )
 from apps.maps.exceptions import (
     CopernicusConfigurationError,
+    MapJobEnqueueError,
+    MapJobIdempotencyConflict,
+    MapJobTransitionConflict,
     MapRenderingError,
     NoSatelliteSceneFound,
     SatelliteCatalogError,
     SatelliteProcessUnavailable,
 )
 from apps.maps.models import MapJob
+from apps.maps.services import create_map_job
 from apps.maps.services.copernicus import CopernicusScene
+from apps.maps.services.lifecycle import cancel_map_job, reprocess_map_job
 from apps.maps.services.pipeline import PipelineProcessingResult
 from apps.maps.tasks import process_map_job
 from apps.properties.models import Property
@@ -64,8 +72,6 @@ class BillingAndMapJobTests(TenantTestCase):
             tenant=self.tenant,
             role=Membership.Role.OWNER,
         )
-        self.client = APIClient(HTTP_HOST=self.get_test_tenant_domain())
-        self.client.force_authenticate(self.user)
         self.account = CreditAccount.objects.create(
             singleton_key=True,
             available_balance=5,
@@ -100,16 +106,21 @@ class BillingAndMapJobTests(TenantTestCase):
             created_by=self.user,
         )
 
-    def job_payload(self, **overrides):
+    def create_job_via_service(self, idempotency_key, **overrides):
         payload = {
             "index_type": "NDVI",
-            "property_id": str(self.property.id),
-            "date_from": "2026-07-01",
-            "date_to": "2026-07-31",
+            "geometry_snapshot": self.property.geometry.clone(),
+            "property_instance": self.property,
+            "date_from": date(2026, 7, 1),
+            "date_to": date(2026, 7, 31),
             "max_cloud_cover": 20,
         }
         payload.update(overrides)
-        return payload
+        return create_map_job(
+            created_by=self.user,
+            idempotency_key=idempotency_key,
+            **payload,
+        )
 
     @patch("apps.maps.tasks.CopernicusSceneService.search_best_scene")
     def test_cancel_job_releases_credit_once_and_stops_worker(self, search):
@@ -121,17 +132,17 @@ class BillingAndMapJobTests(TenantTestCase):
             created_by=self.user,
         )
 
-        first = self.client.post(f"/api/v1/map-jobs/{job.id}/cancel/")
-        replay = self.client.post(f"/api/v1/map-jobs/{job.id}/cancel/")
+        first, first_replayed = cancel_map_job(job_id=job.id, cancelled_by=self.user)
+        replay, replayed = cancel_map_job(job_id=job.id, cancelled_by=self.user)
         task_result = process_map_job.apply(
             args=(str(job.id), self.tenant.schema_name)
         ).get()
 
         job.refresh_from_db()
         self.account.refresh_from_db()
-        self.assertEqual(first.status_code, 200)
-        self.assertEqual(replay.status_code, 200)
-        self.assertEqual(replay["Idempotent-Replayed"], "true")
+        self.assertEqual(first.id, replay.id)
+        self.assertFalse(first_replayed)
+        self.assertTrue(replayed)
         self.assertEqual(job.status, MapJob.Status.CANCELLED)
         self.assertEqual(job.cancelled_by, self.user)
         self.assertIsNotNone(job.cancelled_at)
@@ -141,6 +152,29 @@ class BillingAndMapJobTests(TenantTestCase):
         self.assertEqual(CreditTransaction.objects.count(), 2)
         search.assert_not_called()
 
+    def test_cancel_after_download_starts_captures_reserved_credit(self):
+        job = self.create_job()
+        reserve_credits(
+            map_job=job,
+            amount=1,
+            idempotency_key=f"map-job:{job.id}:reserve",
+            created_by=self.user,
+        )
+        job.status = MapJob.Status.DOWNLOADING
+        job.save(update_fields=("status",))
+
+        cancel_map_job(job_id=job.id, cancelled_by=self.user)
+
+        self.account.refresh_from_db()
+        self.assertEqual(self.account.available_balance, 4)
+        self.assertEqual(self.account.reserved_balance, 0)
+        self.assertTrue(
+            CreditTransaction.objects.filter(
+                map_job=job,
+                transaction_type=CreditTransaction.Type.CAPTURE,
+            ).exists()
+        )
+
     @patch("apps.maps.tasks.process_map_job.delay")
     def test_reprocess_terminal_job_is_idempotent_and_reserves_credit(self, delay):
         delay.return_value = SimpleNamespace(id="reprocessed-task")
@@ -149,21 +183,22 @@ class BillingAndMapJobTests(TenantTestCase):
         source.current_step = "Falha anterior"
         source.save(update_fields=("status", "current_step"))
 
-        first = self.client.post(
-            f"/api/v1/map-jobs/{source.id}/reprocess/",
-            HTTP_IDEMPOTENCY_KEY="reprocess-source-once",
+        first, first_replayed = reprocess_map_job(
+            source_job=source,
+            created_by=self.user,
+            idempotency_key="reprocess-source-once",
         )
-        replay = self.client.post(
-            f"/api/v1/map-jobs/{source.id}/reprocess/",
-            HTTP_IDEMPOTENCY_KEY="reprocess-source-once",
+        replay, replayed = reprocess_map_job(
+            source_job=source,
+            created_by=self.user,
+            idempotency_key="reprocess-source-once",
         )
 
         self.account.refresh_from_db()
         reprocessed = MapJob.objects.exclude(pk=source.pk).get()
-        self.assertEqual(first.status_code, 202, first.data)
-        self.assertEqual(replay.status_code, 202, replay.data)
-        self.assertEqual(replay["Idempotent-Replayed"], "true")
-        self.assertEqual(first.data["id"], replay.data["id"])
+        self.assertFalse(first_replayed)
+        self.assertTrue(replayed)
+        self.assertEqual(first.id, replay.id)
         self.assertEqual(reprocessed.reprocessed_from, source)
         self.assertEqual(reprocessed.status, MapJob.Status.PENDING)
         self.assertEqual(reprocessed.celery_task_id, "reprocessed-task")
@@ -178,16 +213,14 @@ class BillingAndMapJobTests(TenantTestCase):
         failed.status = MapJob.Status.FAILED
         failed.save(update_fields=("status",))
 
-        reprocess = self.client.post(
-            f"/api/v1/map-jobs/{active.id}/reprocess/",
-            HTTP_IDEMPOTENCY_KEY="active-reprocess",
-        )
-        cancel = self.client.post(f"/api/v1/map-jobs/{failed.id}/cancel/")
-
-        self.assertEqual(reprocess.status_code, 409)
-        self.assertEqual(reprocess.data["code"], "job_not_reprocessable")
-        self.assertEqual(cancel.status_code, 409)
-        self.assertEqual(cancel.data["code"], "job_not_cancellable")
+        with self.assertRaises(MapJobTransitionConflict):
+            reprocess_map_job(
+                source_job=active,
+                created_by=self.user,
+                idempotency_key="active-reprocess",
+            )
+        with self.assertRaises(MapJobTransitionConflict):
+            cancel_map_job(job_id=failed.id, cancelled_by=self.user)
 
     def test_reserve_and_capture_are_idempotent(self):
         job = self.create_job()
@@ -277,27 +310,15 @@ class BillingAndMapJobTests(TenantTestCase):
             entry.delete()
 
     @patch("apps.maps.tasks.process_map_job.delay")
-    def test_map_job_api_reserves_once_and_replays_same_request(self, delay):
+    def test_create_map_job_reserves_once_and_replays_same_request(self, delay):
         delay.return_value = SimpleNamespace(id="celery-task-123")
 
-        first = self.client.post(
-            "/api/v1/map-jobs/",
-            self.job_payload(),
-            format="json",
-            HTTP_IDEMPOTENCY_KEY="request-map-1",
-        )
-        replay = self.client.post(
-            "/api/v1/map-jobs/",
-            self.job_payload(),
-            format="json",
-            HTTP_IDEMPOTENCY_KEY="request-map-1",
-        )
+        first, first_replayed = self.create_job_via_service("request-map-1")
+        replay, replayed = self.create_job_via_service("request-map-1")
 
-        self.assertEqual(first.status_code, 202, first.data)
-        self.assertEqual(replay.status_code, 202, replay.data)
-        self.assertEqual(first.data["id"], replay.data["id"])
-        self.assertEqual(first.headers["Idempotent-Replayed"], "false")
-        self.assertEqual(replay.headers["Idempotent-Replayed"], "true")
+        self.assertEqual(first.id, replay.id)
+        self.assertFalse(first_replayed)
+        self.assertTrue(replayed)
         self.assertEqual(MapJob.objects.count(), 1)
         self.assertEqual(CreditTransaction.objects.count(), 1)
         delay.assert_called_once()
@@ -308,126 +329,43 @@ class BillingAndMapJobTests(TenantTestCase):
     @patch("apps.maps.tasks.process_map_job.delay")
     def test_idempotency_key_rejects_different_request(self, delay):
         delay.return_value = SimpleNamespace(id="celery-task-123")
-        first = self.client.post(
-            "/api/v1/map-jobs/",
-            self.job_payload(),
-            format="json",
-            HTTP_IDEMPOTENCY_KEY="request-conflict",
-        )
-        conflict = self.client.post(
-            "/api/v1/map-jobs/",
-            self.job_payload(date_to="2026-07-30"),
-            format="json",
-            HTTP_IDEMPOTENCY_KEY="request-conflict",
-        )
+        self.create_job_via_service("request-conflict")
 
-        self.assertEqual(first.status_code, 202)
-        self.assertEqual(conflict.status_code, 409)
-        self.assertEqual(conflict.data["code"], "idempotency_conflict")
+        with self.assertRaises(MapJobIdempotencyConflict):
+            self.create_job_via_service(
+                "request-conflict",
+                date_to=date(2026, 7, 30),
+            )
         self.assertEqual(MapJob.objects.count(), 1)
         self.assertEqual(CreditTransaction.objects.count(), 1)
-
-    @patch("apps.maps.tasks.process_map_job.delay")
-    def test_map_job_accepts_free_geometry_snapshot(self, delay):
-        delay.return_value = SimpleNamespace(id="celery-free-geometry")
-        payload = self.job_payload()
-        payload.pop("property_id")
-        payload["geometry"] = {
-            "type": "Polygon",
-            "coordinates": [
-                [
-                    [-48.01, -15.01],
-                    [-48.01, -15.00],
-                    [-48.00, -15.00],
-                    [-48.00, -15.01],
-                    [-48.01, -15.01],
-                ]
-            ],
-        }
-
-        response = self.client.post(
-            "/api/v1/map-jobs/",
-            payload,
-            format="json",
-            HTTP_IDEMPOTENCY_KEY="free-geometry",
-        )
-
-        self.assertEqual(response.status_code, 202, response.data)
-        self.assertIsNone(response.data["property_id"])
-        self.assertEqual(response.data["geometry_snapshot"]["type"], "MultiPolygon")
 
     @patch("apps.maps.tasks.process_map_job.delay")
     def test_missing_processing_price_rejects_job_without_reserving(self, delay):
         self.price.delete()
 
-        response = self.client.post(
-            "/api/v1/map-jobs/",
-            self.job_payload(),
-            format="json",
-            HTTP_IDEMPOTENCY_KEY="missing-price",
-        )
+        with self.assertRaises(ProcessingPriceNotConfigured):
+            self.create_job_via_service("missing-price")
 
-        self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.data["code"], "price_not_configured")
         self.assertEqual(MapJob.objects.count(), 0)
         self.assertEqual(CreditTransaction.objects.count(), 0)
         delay.assert_not_called()
 
-    @patch("apps.maps.tasks.process_map_job.delay")
-    def test_job_api_validates_xor_dates_and_insufficient_credits(self, delay):
-        delay.return_value = SimpleNamespace(id="unused")
-        both_sources = self.client.post(
-            "/api/v1/map-jobs/",
-            self.job_payload(
-                geometry={
-                    "type": "MultiPolygon",
-                    "coordinates": [
-                        [
-                            [
-                                [-48.01, -15.01],
-                                [-48.01, -15.00],
-                                [-48.00, -15.01],
-                                [-48.01, -15.01],
-                            ]
-                        ]
-                    ],
-                }
-            ),
-            format="json",
-            HTTP_IDEMPOTENCY_KEY="invalid-xor",
-        )
-        invalid_dates = self.client.post(
-            "/api/v1/map-jobs/",
-            self.job_payload(date_from="2026-08-01", date_to="2026-07-01"),
-            format="json",
-            HTTP_IDEMPOTENCY_KEY="invalid-dates",
-        )
+    def test_create_map_job_rejects_insufficient_credits(self):
         self.account.available_balance = 0
         self.account.save(update_fields=("available_balance", "updated_at"))
-        insufficient = self.client.post(
-            "/api/v1/map-jobs/",
-            self.job_payload(),
-            format="json",
-            HTTP_IDEMPOTENCY_KEY="insufficient",
-        )
 
-        self.assertEqual(both_sources.status_code, 400)
-        self.assertEqual(invalid_dates.status_code, 400)
-        self.assertEqual(insufficient.status_code, 402)
+        with self.assertRaises(InsufficientCredits):
+            self.create_job_via_service("insufficient")
+
         self.assertEqual(MapJob.objects.count(), 0)
 
     @patch("apps.maps.tasks.process_map_job.delay")
     def test_queue_failure_marks_job_failed_and_releases_credit(self, delay):
         delay.side_effect = ConnectionError("Redis unavailable")
 
-        response = self.client.post(
-            "/api/v1/map-jobs/",
-            self.job_payload(),
-            format="json",
-            HTTP_IDEMPOTENCY_KEY="queue-failure",
-        )
+        with self.assertRaises(MapJobEnqueueError):
+            self.create_job_via_service("queue-failure")
 
-        self.assertEqual(response.status_code, 503)
         job = MapJob.objects.get()
         self.assertEqual(job.status, MapJob.Status.FAILED)
         self.assertEqual(job.error_code, "QUEUE_UNAVAILABLE")
@@ -654,15 +592,3 @@ class BillingAndMapJobTests(TenantTestCase):
         self.assertEqual(job.error_code, "SATELLITE_CATALOG_UNAVAILABLE")
         self.assertEqual(self.account.available_balance, 5)
         self.assertEqual(self.account.reserved_balance, 0)
-
-    def test_billing_read_endpoints(self):
-        account = self.client.get("/api/v1/billing/account/")
-        transactions = self.client.get("/api/v1/billing/transactions/")
-        prices = self.client.get("/api/v1/billing/prices/")
-
-        self.assertEqual(account.status_code, 200)
-        self.assertEqual(account.data["available_balance"], 5)
-        self.assertEqual(transactions.status_code, 200)
-        self.assertEqual(transactions.data["count"], 0)
-        self.assertEqual(prices.status_code, 200)
-        self.assertEqual(prices.data[0]["credit_cost"], 1)

@@ -1,0 +1,24 @@
+{% extends 'web/base.html' %}
+{% block title %}Novo mapa NDVI · Delta Mapas{% endblock %}
+{% block section_name %}Processamentos{% endblock %}
+{% block content %}
+<header class="page-header"><div><a class="back-link" href="{% url 'web:jobs' %}">← Voltar para processamentos</a><span class="eyebrow">Nova solicitação</span><h1>Gerar mapa NDVI</h1><p>Defina a área e a janela de observação. Selecionaremos a melhor cena disponível.</p></div></header>
+<form method="post" class="request-layout" novalidate>{% csrf_token %}
+  <section class="form-card">
+    {% if form.non_field_errors %}<div class="form-alert">{{ form.non_field_errors|striptags }}</div>{% endif %}
+    <header><span class="step-number">01</span><div><h2>Área de interesse</h2><p>Selecione uma propriedade com geometria já validada.</p></div></header>
+    <label class="form-field"><span>{{ form.property.label }}</span>{{ form.property }}{% for error in form.property.errors %}<small class="field-error">{{ error }}</small>{% endfor %}</label>
+    <label class="form-field"><span>{{ form.index_type.label }}</span>{{ form.index_type }}{% for error in form.index_type.errors %}<small class="field-error">{{ error }}</small>{% endfor %}</label>
+    <hr>
+    <header><span class="step-number">02</span><div><h2>Janela de observação</h2><p>Uma janela maior aumenta a chance de encontrar uma cena limpa.</p></div></header>
+    <div class="form-grid"><label class="form-field"><span>{{ form.date_from.label }}</span>{{ form.date_from }}{% for error in form.date_from.errors %}<small class="field-error">{{ error }}</small>{% endfor %}</label><label class="form-field"><span>{{ form.date_to.label }}</span>{{ form.date_to }}{% for error in form.date_to.errors %}<small class="field-error">{{ error }}</small>{% endfor %}</label><label class="form-field form-span-2"><span>{{ form.max_cloud_cover.label }}</span>{{ form.max_cloud_cover }}{% for error in form.max_cloud_cover.errors %}<small class="field-error">{{ error }}</small>{% endfor %}</label></div>
+  </section>
+  <aside class="order-summary">
+    <div class="summary-head"><span class="eyebrow">Resumo do pedido</span><strong>{{ account.available_balance }}</strong><small>créditos disponíveis</small></div>
+    <dl><div><dt>Produto</dt><dd>NDVI</dd></div><div><dt>Fonte</dt><dd>Sentinel-2 L2A</dd></div><div><dt>Resolução</dt><dd>10 metros</dd></div><div><dt>Entrega</dt><dd>PNG + PDF</dd></div><div class="summary-total"><dt>Custo estimado</dt><dd>{{ price.credit_cost|default:'—' }} crédito{{ price.credit_cost|default:0|pluralize }}</dd></div></dl>
+    <p>O valor é reservado agora e capturado quando o processamento utiliza o provedor.</p>
+    <button class="button button-accent button-block" type="submit" {% if not price or account.available_balance < price.credit_cost %}disabled{% endif %}>Enviar para processamento <span>→</span></button>
+    {% if not price %}<small class="summary-warning">Preço NDVI não configurado.</small>{% elif account.available_balance < price.credit_cost %}<small class="summary-warning">Saldo insuficiente.</small>{% endif %}
+  </aside>
+</form>
+{% endblock %}

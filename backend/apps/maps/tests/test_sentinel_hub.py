@@ -169,6 +169,7 @@ class SentinelHubProcessClientTests(SimpleTestCase):
             (FakeResponse(status=403), CopernicusAuthenticationError),
             (FakeResponse(status=429), SatelliteProcessUnavailable),
             (FakeResponse(status=400), SatelliteProcessRejected),
+            (FakeResponse(status=302), SatelliteProcessRejected),
             (
                 FakeResponse(stream_error=requests.ConnectionError("broken stream")),
                 SatelliteProcessUnavailable,

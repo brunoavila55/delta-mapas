@@ -40,18 +40,17 @@ entre storage e banco.
 A finalização trava novamente o job e rejeita `CANCELLED` antes de persistir ou capturar. Arquivos
 que tenham sido enviados durante a corrida são removidos pelo fluxo de compensação.
 
-## API autenticada
+## Interface autenticada
 
 ```text
-GET /api/v1/maps/
-GET /api/v1/maps/?index_type=NDVI
-GET /api/v1/maps/{uuid}/
-GET /api/v1/maps/{uuid}/download/png/
-GET /api/v1/maps/{uuid}/download/pdf/
+GET /maps/
+GET /maps/?search=Fazenda&ordering=-scene_date
+GET /maps/{uuid}/png/
+GET /maps/{uuid}/pdf/
 ```
 
 A listagem aceita `search` por propriedade ou identificador STAC, `ordering` por `created_at`,
-`scene_date` ou `cloud_cover`, além de `page` e `page_size` com limite de 100 itens.
+`scene_date` ou `cloud_cover`, além de paginação.
 
-Listagem, detalhe e download exigem JWT e membership ativa no tenant resolvido. Os arquivos são
-servidos como anexos pela aplicação; a URL interna do MinIO e suas credenciais não são expostas.
+Listagem e download exigem sessão e membership ativa no tenant resolvido. Os arquivos são servidos
+pela aplicação; a URL interna do MinIO e suas credenciais não são expostas.

@@ -1,4 +1,5 @@
 from unittest.mock import Mock
+import json
 
 import requests
 from django.test import SimpleTestCase, override_settings
@@ -16,16 +17,22 @@ from apps.maps.services.oauth import OAuthTokenProvider
     COPERNICUS_CLIENT_SECRET="oauth-secret",
     COPERNICUS_TOKEN_URL="https://identity.example.test/token",
     COPERNICUS_AUTH_TIMEOUT_SECONDS=12,
+    COPERNICUS_AUTH_MAX_RESPONSE_BYTES=1024,
     COPERNICUS_TOKEN_REFRESH_LEEWAY_SECONDS=60,
 )
 class OAuthTokenProviderTests(SimpleTestCase):
     def response(self, *, status=200, payload=None):
         response = Mock()
         response.status_code = status
-        response.json.return_value = payload or {
-            "access_token": "short-lived-token",
-            "expires_in": 600,
-        }
+        body = json.dumps(
+            payload
+            or {
+                "access_token": "short-lived-token",
+                "expires_in": 600,
+            }
+        ).encode()
+        response.headers = {"Content-Length": str(len(body))}
+        response.iter_content.return_value = [body]
         return response
 
     def test_requests_and_reuses_token_without_exposing_credentials(self):
@@ -48,6 +55,8 @@ class OAuthTokenProviderTests(SimpleTestCase):
             },
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             timeout=12,
+            stream=True,
+            allow_redirects=False,
         )
 
     def test_refreshes_token_inside_expiry_leeway(self):
@@ -99,3 +108,30 @@ class OAuthTokenProviderTests(SimpleTestCase):
 
         with self.assertRaises(CopernicusAuthenticationError):
             OAuthTokenProvider(session=session).get_access_token()
+
+    def test_rejects_redirects_and_oversized_responses(self):
+        redirect_session = Mock()
+        redirect_session.post.return_value = self.response(status=302)
+        with self.assertRaises(CopernicusAuthenticationError):
+            OAuthTokenProvider(session=redirect_session).get_access_token()
+
+        oversized = self.response()
+        oversized.headers = {"Content-Length": "1025"}
+        oversized_session = Mock()
+        oversized_session.post.return_value = oversized
+        with self.assertRaises(CopernicusAuthenticationError):
+            OAuthTokenProvider(session=oversized_session).get_access_token()
+
+        self.assertTrue(redirect_session.post.return_value.close.called)
+        self.assertTrue(oversized.close.called)
+
+    def test_closes_response_and_classifies_interrupted_stream(self):
+        response = self.response()
+        response.iter_content.side_effect = requests.ConnectionError("broken")
+        session = Mock()
+        session.post.return_value = response
+
+        with self.assertRaises(CopernicusAuthenticationUnavailable):
+            OAuthTokenProvider(session=session).get_access_token()
+
+        response.close.assert_called_once()

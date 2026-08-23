@@ -1,0 +1,16 @@
+{% extends 'web/base.html' %}
+{% block title %}Créditos · Delta Mapas{% endblock %}
+{% block section_name %}Créditos{% endblock %}
+{% block content %}
+<header class="page-header"><div><span class="eyebrow">Conta de processamento</span><h1>Créditos</h1><p>Saldo e histórico auditável da organização.</p></div></header>
+<section class="credit-hero"><div><span class="eyebrow">Saldo disponível</span><strong>{{ account.available_balance }}</strong><small>créditos prontos para uso</small></div><div class="credit-divider"></div><dl><div><dt>Reservados</dt><dd>{{ account.reserved_balance }}</dd></div><div><dt>Preço NDVI</dt><dd>{{ price.credit_cost|default:'—' }}</dd></div><div><dt>Última atualização</dt><dd>{{ account.updated_at|date:'d/m/Y H:i' }}</dd></div></dl><i class="credit-rings"></i></section>
+<section class="panel ledger-panel">
+  <header class="panel-header"><div><span class="eyebrow">Ledger</span><h2>Histórico de movimentações</h2></div>
+    <form method="get" action="{% url 'web:billing' %}" hx-get="{% url 'web:billing' %}" hx-target="#billing-ledger" hx-swap="outerHTML" hx-push-url="true" hx-trigger="change">
+      <select name="type" aria-label="Tipo de movimentação"><option value="">Todos os eventos</option>{% for value, label in type_choices %}<option value="{{ value }}" {% if selected_type == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+      <select name="ordering" aria-label="Ordenação"><option value="-created_at" {% if ordering == '-created_at' %}selected{% endif %}>Mais recentes</option><option value="created_at" {% if ordering == 'created_at' %}selected{% endif %}>Mais antigos</option><option value="-amount" {% if ordering == '-amount' %}selected{% endif %}>Maior valor</option></select>
+    </form>
+  </header>
+  {% include 'web/partials/billing_ledger.html' %}
+</section>
+{% endblock %}
