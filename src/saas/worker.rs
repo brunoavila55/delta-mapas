@@ -12,6 +12,7 @@ struct Job {
     id: Uuid,
     user_id: Uuid,
     geometry: Value,
+    report_context: Value,
     date_from: NaiveDate,
     date_to: NaiveDate,
     max_cloud: f64,
@@ -30,7 +31,7 @@ async fn claim(app: &App) -> Result<Option<Job>> {
             .execute(&mut *tx)
             .await?;
     }
-    let job = sqlx::query_as::<_,Job>("WITH candidate AS (SELECT id FROM analyses WHERE ((status='queued' AND available_at<=now()) OR (status='running' AND lease_until<now())) AND attempts<3 ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE analyses a SET status='running',attempts=attempts+1,lease_token=$1,lease_until=now()+interval '90 seconds',error=NULL FROM candidate c WHERE a.id=c.id RETURNING a.id,a.user_id,a.geometry,a.date_from,a.date_to,a.max_cloud,a.mode,a.lease_token,a.attempts")
+    let job = sqlx::query_as::<_,Job>("WITH candidate AS (SELECT id FROM analyses WHERE ((status='queued' AND available_at<=now()) OR (status='running' AND lease_until<now())) AND attempts<3 ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE analyses a SET status='running',attempts=attempts+1,lease_token=$1,lease_until=now()+interval '90 seconds',error=NULL FROM candidate c WHERE a.id=c.id RETURNING a.id,a.user_id,a.geometry,a.report_context,a.date_from,a.date_to,a.max_cloud,a.mode,a.lease_token,a.attempts")
         .bind(Uuid::new_v4()).fetch_optional(&mut *tx).await?;
     tx.commit().await?;
     Ok(job)
@@ -52,7 +53,7 @@ fn process(app: App, job: Job) -> Result<Value> {
     fs::create_dir(&stage)?;
     let result = (|| {
         let area = Area::from_sirgas_json(&job.geometry.to_string())?;
-        let source = if job.mode == "synthetic" {
+        let mut source = if job.mode == "synthetic" {
             ensure!(app.config.demo_enabled, "Demonstração desativada no worker");
             raster::write_demo(&stage.join("bands.tif"), &area)?;
             json!({"kind":"synthetic","description":"Demonstração; não são dados de satélite"})
@@ -66,6 +67,8 @@ fn process(app: App, job: Job) -> Result<Value> {
                 &stage,
             )?
         };
+        source["report_context"] = job.report_context.clone();
+        source["analysis_id"] = json!(job.id);
         let bands = raster::read_bands(&stage.join("bands.tif"))?;
         let expected = raster::Grid::from_area(&area, bands.grid.width, bands.grid.height);
         ensure!(
@@ -76,7 +79,13 @@ fn process(app: App, job: Job) -> Result<Value> {
             "Grade inesperada do provedor"
         );
         let analysis = raster::calculate(&bands, &area)?;
-        let statistics = serde_json::to_value(&analysis.statistics)?;
+        let mut statistics = serde_json::to_value(&analysis.statistics)?;
+        if let Some(date) = source["metadata"]["tiles"][0]["date"]
+            .as_str()
+            .and_then(|d| chrono::DateTime::parse_from_rfc3339(d).ok())
+        {
+            statistics["scene_date"] = json!(date.date_naive());
+        }
         render::write_products(&stage, &analysis, &area, source)?;
         // The raw provider bands are temporary, not a customer-facing product.
         fs::remove_file(stage.join("bands.tif"))?;
@@ -112,9 +121,10 @@ pub async fn once(app: &App) -> Result<bool> {
     let mut tx = worker_tx(&app.pool).await?;
     match result {
         Ok(statistics) => {
-            let changed = sqlx::query("UPDATE analyses SET status='completed',statistics=$1,artifact_attempt=$2,finished_at=now(),lease_until=NULL WHERE id=$3 AND user_id=$4 AND lease_token=$2 AND status='running'")
+            let changed = sqlx::query("UPDATE analyses SET status='completed',scene_date=($1::jsonb->>'scene_date')::date,statistics=$1,artifact_attempt=$2,finished_at=now(),lease_until=NULL WHERE id=$3 AND user_id=$4 AND lease_token=$2 AND status='running'")
                 .bind(statistics).bind(job.lease_token).bind(job.id).bind(job.user_id).execute(&mut *tx).await?.rows_affected();
             if changed == 1 {
+                super::monitoring::evaluate(&mut tx, job.id).await?;
                 sqlx::query("UPDATE accounts SET reserved=reserved-1,used=used+1 WHERE id=$1")
                     .bind(job.user_id)
                     .execute(&mut *tx)
@@ -134,6 +144,8 @@ pub async fn once(app: &App) -> Result<bool> {
                 .bind(if terminal { "Não foi possível concluir a análise; seu limite foi liberado" } else { "Nova tentativa de processamento" })
                 .bind(terminal).bind(job.id).bind(job.user_id).bind(job.lease_token).execute(&mut *tx).await?.rows_affected();
             if terminal && changed == 1 {
+                sqlx::query("UPDATE monitoring m SET state='failed' FROM analyses n WHERE n.id=$1 AND m.field_id=n.field_id AND m.user_id=n.user_id AND m.generation=n.monitor_generation AND m.enabled")
+                    .bind(job.id).execute(&mut *tx).await?;
                 sqlx::query("UPDATE accounts SET reserved=reserved-1 WHERE id=$1")
                     .bind(job.user_id)
                     .execute(&mut *tx)
@@ -148,7 +160,14 @@ pub async fn once(app: &App) -> Result<bool> {
 pub async fn run() -> Result<()> {
     let app = App::new(Config::from_env()?).await?;
     println!("Worker pronto; concorrência de processamento: 1");
+    let mut scheduled = tokio::time::Instant::now() - Duration::from_secs(60);
     loop {
+        if scheduled.elapsed() >= Duration::from_secs(60) {
+            if let Err(error) = super::monitoring::schedule(&app).await {
+                eprintln!("Monitoring scheduler failed: {error}");
+            }
+            scheduled = tokio::time::Instant::now();
+        }
         match once(&app).await {
             Ok(true) => {}
             Ok(false) => {

@@ -7,3 +7,7 @@ tests
 scripts
 docs
 MVP-e-arquitetura.md
+
+frontend/node_modules
+frontend/test-results
+frontend/playwright-report

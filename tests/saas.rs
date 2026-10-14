@@ -573,11 +573,27 @@ async fn accounts_isolation_queue_and_private_downloads() {
         .value;
     assert_eq!(me["usage"]["reserved"], 0);
     assert_eq!(me["usage"]["used"], 1);
-    for file in ["ndvi.png", "report.pdf", "ndvi.tif", "analysis.json"] {
+    for file in [
+        "ndvi.png",
+        "map.pdf",
+        "report.pdf",
+        "ndvi.tif",
+        "analysis.json",
+    ] {
         let path = format!("/api/analyses/{id}/files/{file}");
         let owned = call(&app, "GET", &path, a, Value::Null, None, false).await;
         assert_eq!(owned.status, StatusCode::OK);
         assert!(!owned.bytes.is_empty());
+        if file == "analysis.json" {
+            assert_eq!(
+                owned.value["source"]["report_context"]["field_name"],
+                "Talhão A"
+            );
+            assert_eq!(
+                owned.value["products"],
+                json!(["ndvi.tif", "ndvi.png", "map.pdf", "report.pdf"])
+            );
+        }
         assert_eq!(
             call(&app, "GET", &path, b, Value::Null, None, false)
                 .await
@@ -644,6 +660,7 @@ async fn accounts_isolation_queue_and_private_downloads() {
     assert!([one.status, two.status].contains(&StatusCode::CREATED));
     assert!([one.status, two.status].contains(&StatusCode::PAYMENT_REQUIRED));
     assert!(worker::once(&app).await.unwrap());
+    monitoring_checks(&app, a, b, a_id, &field_id).await;
     let login = call(
         &app,
         "POST",
@@ -706,6 +723,14 @@ async fn accounts_isolation_queue_and_private_downloads() {
     );
     // Clean our own test accounts and outputs; no other database is touched.
     let mut tx = worker_tx(&app.pool).await.unwrap();
+    for table in ["monitoring_alerts", "monitoring"] {
+        sqlx::query(&format!("DELETE FROM {table} WHERE user_id IN ($1,$2)"))
+            .bind(a_id)
+            .bind(b_id)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+    }
     sqlx::query("DELETE FROM analyses WHERE user_id IN ($1,$2)")
         .bind(a_id)
         .bind(b_id)
@@ -731,4 +756,276 @@ async fn accounts_isolation_queue_and_private_downloads() {
         .await
         .unwrap();
     tx.commit().await.unwrap();
+}
+
+async fn monitoring_checks(
+    app: &App,
+    a: Option<(&str, &str)>,
+    b: Option<(&str, &str)>,
+    user: Uuid,
+    field: &str,
+) {
+    use delta_analysis::saas::monitoring;
+    let today = chrono::Utc::now().date_naive();
+    let settings = json!({"enabled":true,"crop":"Soja","stage":"vegetative","season_start":today-chrono::Duration::days(60),"season_end":today+chrono::Duration::days(90),"drop_threshold":0.15});
+    let path = format!("/api/fields/{field}/monitoring");
+    assert_eq!(
+        call(app, "PUT", &path, b, settings.clone(), None, true)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(
+            app,
+            "PUT",
+            &path,
+            Some((a.unwrap().0, "bad")),
+            settings.clone(),
+            None,
+            true
+        )
+        .await
+        .status,
+        StatusCode::FORBIDDEN
+    );
+    let mut invalid = settings.clone();
+    invalid["drop_threshold"] = json!(0.01);
+    assert_eq!(
+        call(app, "PUT", &path, a, invalid, None, true).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        call(app, "PUT", &path, a, settings.clone(), None, true)
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(app, "GET", "/api/monitoring", b, Value::Null, None, false)
+            .await
+            .value,
+        json!([])
+    );
+    let mut tx = worker_tx(&app.pool).await.unwrap();
+    sqlx::query("UPDATE accounts SET analysis_limit=used+reserved+1 WHERE id=$1")
+        .bind(user)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let (one, two) = tokio::join!(monitoring::schedule(app), monitoring::schedule(app));
+    one.unwrap();
+    two.unwrap();
+    let mut tx = worker_tx(&app.pool).await.unwrap();
+    let ids: Vec<Uuid> =
+        sqlx::query_scalar("SELECT id FROM analyses WHERE user_id=$1 AND origin='automatic'")
+            .bind(user)
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap();
+    assert_eq!(ids.len(), 1);
+    let id = ids[0];
+    let previous = Uuid::new_v4();
+    // Seed known observations; satellite network access is deliberately excluded.
+    sqlx::query("UPDATE analyses SET status='completed',scene_date=$2,statistics=$3,finished_at=now() WHERE id=$1")
+        .bind(id).bind(today-chrono::Duration::days(1)).bind(json!({"mean":0.5,"valid_percent":95})).execute(&mut *tx).await.unwrap();
+    sqlx::query("UPDATE accounts SET reserved=reserved-1,used=used+1 WHERE id=$1")
+        .bind(user)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO analyses(id,user_id,field_id,field_revision,geometry,date_from,date_to,max_cloud,origin,mode,idempotency_key,fingerprint,monitor_generation,status,scene_date,statistics,finished_at) SELECT $1,user_id,field_id,field_revision,geometry,date_from,date_to,max_cloud,origin,mode,'baseline','baseline',monitor_generation,'completed',$2,$3,now() FROM analyses WHERE id=$4")
+        .bind(previous).bind(today-chrono::Duration::days(8)).bind(json!({"mean":0.8,"valid_percent":95})).bind(id).execute(&mut *tx).await.unwrap();
+    sqlx::query("UPDATE monitoring SET stage='maturation' WHERE field_id=$1::uuid")
+        .bind(field)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    monitoring::evaluate(&mut tx, id).await.unwrap();
+    let premature: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM monitoring_alerts WHERE analysis_id=$1")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    assert_eq!(premature, 0);
+    sqlx::query("UPDATE monitoring SET stage='vegetative' WHERE field_id=$1::uuid")
+        .bind(field)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    monitoring::evaluate(&mut tx, id).await.unwrap();
+    monitoring::evaluate(&mut tx, id).await.unwrap();
+    let alert: Uuid = sqlx::query_scalar("SELECT id FROM monitoring_alerts WHERE analysis_id=$1")
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM monitoring_alerts WHERE user_id=$1")
+        .bind(user)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+    tx.commit().await.unwrap();
+    assert_eq!(
+        call(app, "GET", "/api/alerts", b, Value::Null, None, false)
+            .await
+            .value,
+        json!([])
+    );
+    assert_eq!(
+        call(
+            app,
+            "POST",
+            &format!("/api/alerts/{alert}/read"),
+            b,
+            json!({}),
+            None,
+            true
+        )
+        .await
+        .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(
+            app,
+            "POST",
+            &format!("/api/alerts/{alert}/read"),
+            a,
+            json!({}),
+            None,
+            true
+        )
+        .await
+        .status,
+        StatusCode::OK
+    );
+    assert!(
+        call(app, "GET", "/api/alerts", a, Value::Null, None, false)
+            .await
+            .value[0]["read_at"]
+            .is_string()
+    );
+    let detail = call(
+        app,
+        "GET",
+        &format!("/api/analyses/{id}"),
+        a,
+        Value::Null,
+        None,
+        false,
+    )
+    .await;
+    assert!(detail.value["field_name"].is_string());
+    let mut tx = worker_tx(&app.pool).await.unwrap();
+    sqlx::query("DELETE FROM monitoring_alerts WHERE analysis_id=$1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    // Neither insufficient coverage nor the same scene date may emit an alert.
+    sqlx::query("UPDATE analyses SET statistics=$2 WHERE id=$1")
+        .bind(id)
+        .bind(json!({"mean":0.5,"valid_percent":89}))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    monitoring::evaluate(&mut tx, id).await.unwrap();
+    sqlx::query("UPDATE analyses SET statistics=$2,scene_date=$3 WHERE id=$1")
+        .bind(id)
+        .bind(json!({"mean":0.5,"valid_percent":95}))
+        .bind(today - chrono::Duration::days(8))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    monitoring::evaluate(&mut tx, id).await.unwrap();
+    sqlx::query("UPDATE analyses SET scene_date=$2 WHERE id=$1")
+        .bind(id)
+        .bind(today - chrono::Duration::days(1))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    // A changed field revision excludes the old baseline.
+    sqlx::query("UPDATE analyses SET field_revision=$2 WHERE id=$1")
+        .bind(previous)
+        .bind(Uuid::new_v4())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    monitoring::evaluate(&mut tx, id).await.unwrap();
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM monitoring_alerts WHERE user_id=$1")
+        .bind(user)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+    sqlx::query("UPDATE monitoring SET next_run=now()-interval '1 day' WHERE field_id=$1::uuid")
+        .bind(field)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    monitoring::schedule(app).await.unwrap();
+    let rows = call(app, "GET", "/api/monitoring", a, Value::Null, None, false)
+        .await
+        .value;
+    assert_eq!(rows[0]["state"], "quota_exhausted");
+    // Saving a new cycle isolates the previous observations.
+    assert_eq!(
+        call(app, "PUT", &path, a, settings.clone(), None, true)
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let mut tx = worker_tx(&app.pool).await.unwrap();
+    sqlx::query("UPDATE analyses SET field_revision=(SELECT revision FROM fields WHERE id=analyses.field_id) WHERE id=$1").bind(previous).execute(&mut *tx).await.unwrap();
+    monitoring::evaluate(&mut tx, id).await.unwrap();
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM monitoring_alerts WHERE user_id=$1")
+        .bind(user)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+    tx.commit().await.unwrap();
+    let mut paused = settings;
+    paused["enabled"] = json!(false);
+    assert_eq!(
+        call(app, "PUT", &path, a, paused, None, true).await.status,
+        StatusCode::OK
+    );
+    monitoring::schedule(app).await.unwrap();
+    let mut tx = worker_tx(&app.pool).await.unwrap();
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM analyses WHERE user_id=$1 AND origin='automatic'")
+            .bind(user)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    assert_eq!(count, 2);
+    tx.commit().await.unwrap();
+    let future = json!({"enabled":true,"crop":"Milho","stage":"reproductive","season_start":today+chrono::Duration::days(10),"season_end":today+chrono::Duration::days(100),"drop_threshold":0.2});
+    assert_eq!(
+        call(app, "PUT", &path, a, future, None, true).await.status,
+        StatusCode::OK
+    );
+    monitoring::schedule(app).await.unwrap();
+    assert_eq!(
+        call(app, "GET", "/api/monitoring", a, Value::Null, None, false)
+            .await
+            .value[0]["state"],
+        "waiting_season"
+    );
+    let mut tx = worker_tx(&app.pool).await.unwrap();
+    sqlx::query("UPDATE monitoring SET season_start=current_date-20,season_end=current_date-1,next_run=now() WHERE field_id=$1::uuid")
+        .bind(field).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    monitoring::schedule(app).await.unwrap();
+    let finished = call(app, "GET", "/api/monitoring", a, Value::Null, None, false)
+        .await
+        .value;
+    assert_eq!(finished[0]["enabled"], false);
+    assert_eq!(finished[0]["state"], "season_finished");
 }

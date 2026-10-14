@@ -1,6 +1,7 @@
 """Independent scientific check. QA only; Python is not part of the application."""
 import json
 import sys
+import re
 from pathlib import Path
 
 import numpy as np
@@ -54,11 +55,27 @@ assert abs(stats["minimum"] - float(reference[valid].min())) < 1e-7
 assert abs(stats["maximum"] - float(reference[valid].max())) < 1e-7
 assert abs(stats["valid_percent"] - valid.sum() / inside.sum() * 100) < 1e-7
 reader = PdfReader(directory / "report.pdf", strict=True)
-assert len(reader.pages) == 1
-resources = reader.pages[0]["/Resources"]
+assert len(reader.pages) == 2
+resources = reader.pages[1]["/Resources"]
 assert "/F1" in resources["/Font"]
 assert "/Map" in resources["/XObject"]
 assert "SINTÉTICOS" in reader.pages[0].extract_text()
+map_reader = PdfReader(directory / "map.pdf", strict=True)
+assert len(map_reader.pages) == 1
+assert "Escala 1:" in map_reader.pages[0].extract_text()
+assert "EPSG:" in map_reader.pages[0].extract_text()
+assert sum(metadata["distribution"]["valid_pixel_counts"]) == stats["valid_pixels"]
+np.testing.assert_array_equal(np.histogram(reference[valid], bins=metadata["distribution"]["bounds"])[0], metadata["distribution"]["valid_pixel_counts"])
+operations = map_reader.pages[0].get_contents().operations
+placement = next(operations[i-1][0] for i, (args, op) in enumerate(operations) if op == b'Do' and str(args[0]) == '/Map')
+printed_scale = float(re.search(r'Escala 1:(\d+)', map_reader.pages[0].extract_text()).group(1))
+expected_scale = metadata["grid"]["width"] * metadata["grid"]["dx"] / float(placement[0]) * 72 / 0.0254
+assert abs(printed_scale - expected_scale) <= 1.0
+for document in [reader, map_reader]:
+    for page in document.pages:
+        for font in page["/Resources"]["/Font"].values():
+            assert "/FontFile2" in font.get_object()["/FontDescriptor"]
+
 print(json.dumps({"independent_check": "passed", "reference": "NumPy + Rasterio/GDAL",
                   "pixels_in_area": stats["pixels_in_area"], "valid_pixels": stats["valid_pixels"],
                   "mean_ndvi": stats["mean"], "pdf_pages": len(reader.pages)}, indent=2))

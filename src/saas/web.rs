@@ -53,6 +53,16 @@ impl From<sqlx::Error> for ApiError {
 pub fn router(app: App) -> Router {
     let protected = Router::new()
         .route("/api/me", get(me))
+        .route("/api/monitoring", get(super::monitoring::list))
+        .route(
+            "/api/fields/{id}/monitoring",
+            axum::routing::put(super::monitoring::save),
+        )
+        .route("/api/alerts", get(super::monitoring::alerts))
+        .route(
+            "/api/alerts/{id}/read",
+            post(super::monitoring::acknowledge),
+        )
         .route("/api/logout", post(auth::logout))
         .route("/api/properties", get(properties).post(create_property))
         .route("/api/properties/{id}", get(property))
@@ -371,13 +381,13 @@ async fn create_analysis(
     .bind(user.id)
     .fetch_one(&mut *tx)
     .await?;
-    let field: Option<(Uuid, Value)> =
-        sqlx::query_as("SELECT revision,geometry FROM fields WHERE id=$1 AND user_id=$2")
+    let field: Option<(Uuid, Value, Value)> =
+        sqlx::query_as("SELECT f.revision,f.geometry,jsonb_build_object('field_name',f.name,'property_name',p.name,'crop',m.crop,'stage',m.stage) FROM fields f JOIN properties p ON p.id=f.property_id AND p.user_id=f.user_id LEFT JOIN monitoring m ON m.field_id=f.id AND m.user_id=f.user_id WHERE f.id=$1 AND f.user_id=$2")
             .bind(input.field_id)
             .bind(user.id)
             .fetch_optional(&mut *tx)
             .await?;
-    let (revision, geometry) = field.ok_or(ApiError::missing())?;
+    let (revision, geometry, report_context) = field.ok_or(ApiError::missing())?;
     let fingerprint = auth::digest(
         &json!([
             input.field_id,
@@ -413,8 +423,8 @@ async fn create_analysis(
         ));
     }
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO analyses(id,user_id,field_id,field_revision,geometry,date_from,date_to,max_cloud,origin,mode,idempotency_key,fingerprint) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'manual',$9,$10,$11)")
-        .bind(id).bind(user.id).bind(input.field_id).bind(revision).bind(geometry).bind(input.date_from).bind(input.date_to).bind(input.max_cloud).bind(input.mode).bind(key).bind(fingerprint).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO analyses(id,user_id,field_id,field_revision,geometry,date_from,date_to,max_cloud,origin,mode,idempotency_key,fingerprint,report_context) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'manual',$9,$10,$11,$12)")
+        .bind(id).bind(user.id).bind(input.field_id).bind(revision).bind(geometry).bind(input.date_from).bind(input.date_to).bind(input.max_cloud).bind(input.mode).bind(key).bind(fingerprint).bind(report_context).execute(&mut *tx).await?;
     sqlx::query("UPDATE accounts SET reserved=reserved+1 WHERE id=$1")
         .bind(user.id)
         .execute(&mut *tx)
@@ -437,7 +447,7 @@ async fn analysis(
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>, ApiError> {
     let mut tx = tenant_tx(&app.pool, user.id).await?;
-    let item: Option<Value> = sqlx::query_scalar("SELECT jsonb_build_object('id',id,'status',status,'mode',mode,'origin',origin,'field_revision',field_revision,'statistics',statistics,'error',error,'attempts',attempts,'geometry',ST_AsGeoJSON(ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON(geometry),4674),4326),15,0)::jsonb,'storage_crs','EPSG:4674','geometry_crs','EPSG:4326') FROM analyses WHERE id=$1 AND user_id=$2")
+    let item: Option<Value> = sqlx::query_scalar("SELECT jsonb_build_object('id',a.id,'field_id',a.field_id,'field_name',f.name,'date_from',a.date_from,'date_to',a.date_to,'status',a.status,'mode',a.mode,'origin',a.origin,'field_revision',a.field_revision,'statistics',a.statistics,'error',a.error,'attempts',a.attempts,'geometry',ST_AsGeoJSON(ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON(a.geometry),4674),4326),15,0)::jsonb,'storage_crs','EPSG:4674','geometry_crs','EPSG:4326') FROM analyses a JOIN fields f ON f.id=a.field_id AND f.user_id=a.user_id WHERE a.id=$1 AND a.user_id=$2")
         .bind(id).bind(user.id).fetch_optional(&mut *tx).await?;
     Ok(Json(item.ok_or(ApiError::missing())?))
 }
@@ -448,7 +458,7 @@ async fn download(
 ) -> Result<Response, ApiError> {
     let content_type = match name.as_str() {
         "ndvi.png" => "image/png",
-        "report.pdf" => "application/pdf",
+        "report.pdf" | "map.pdf" => "application/pdf",
         "ndvi.tif" => "image/tiff",
         "analysis.json" => "application/json",
         _ => return Err(ApiError::missing()),

@@ -35,5 +35,26 @@ e `verify_demo.py` e as instruções do [guia técnico](docs/GUIA-TECNICO.md).
 
 - Compatibilidade ARM64 e implantação OCI.
 - Backup/restauração e coleta de arquivos órfãos.
-- Recuperação de acesso, verificação de e-mail, cobrança e monitoramento automático.
+- Recuperação de acesso, verificação de e-mail, cobrança.
 - Cobertura de talhões na borda de tiles e reutilização de resultados por cena.
+
+## Acompanhamento semanal (14/10/2026)
+
+Validação em banco temporário PostGIS: migration 0003, isolamento de configurações
+e alertas, CSRF, agendadores concorrentes, reserva única, espera por falta de saldo,
+comparação idempotente e exclusão de cenas repetidas, cobertura insuficiente,
+geometria diferente, configuração de outra safra ou fase de maturação.
+Também foram verificadas espera pelo início da safra e desativação ao encerrá-la. Observações conhecidas são
+inseridas no teste; esta verificação não faz solicitações ao provedor.
+
+Interface verificada no desktop e no celular: ativação, configuração, pausa,
+consulta do resultado e marcação de alerta como conferido. Build TypeScript/Vite,
+formatação Rust, Clippy e testes de processamento também passaram.
+
+## Cartografia e relatório (14/10/2026)
+
+Novas análises geram uma prancha cartográfica independente e um relatório de duas
+páginas. Os PDFs foram renderizados e inspecionados visualmente, com fontes embutidas.
+Testes de integração incluem download privado dos dois PDFs e preservação do nome
+do talhão após edição. A conferência científica independente compara distribuição
+por faixas com NumPy e a escala declarada com o tamanho físico do raster no PDF.

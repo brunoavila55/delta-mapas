@@ -154,6 +154,7 @@ fn cli_generates_all_products_and_preserves_existing_result() {
         "ndvi.tif",
         "ndvi.png",
         "report.pdf",
+        "map.pdf",
         "analysis.json",
         "bands.tif",
     ] {

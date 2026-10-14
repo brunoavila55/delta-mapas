@@ -7,7 +7,7 @@ Revisão: 14/10/2026. Este documento substitui a proposta inicial com organizaç
 - Aplicação principal em Rust; a implementação antiga em Django foi removida.
 - Backend e processamento em Rust, produção em uma VM da OCI.
 - Login individual: cada conta é um tenant, sem cadastro de empresa, membros ou equipes.
-- Primeira versão sob demanda; monitoramento automático previsto para depois.
+- Análises sob demanda e acompanhamento semanal opcional por talhão.
 
 ## Jornada
 
@@ -21,8 +21,8 @@ não equivalem a nuvens do talhão. Falhas sem resultado não consomem a anális
 ## Arquitetura implementada nesta etapa
 
 Um executável Rust com modos `serve`, `worker`, `migrate` e `create-user`, além das
-ferramentas locais de processamento. A interface HTML/CSS/JavaScript é embutida no
-servidor Axum. Não existe build separado de frontend.
+ferramentas locais de processamento. A interface React/TypeScript é compilada pelo Vite e embutida no
+servidor Axum. O Docker executa o build do frontend antes de compilar o Rust.
 
 ```text
 Navegador -> Caddy/HTTPS -> Servidor Rust
@@ -71,12 +71,25 @@ O limite atual é uma franquia inicial de dez análises por conta para o piloto.
 Ainda não existe assinatura paga, renovação mensal ou reutilização por cena entre
 solicitações com chaves diferentes.
 
-## Preparação para o automático
+## Monitoramento automático
 
-O banco já registra a origem `manual` ou `automatic`. A API pública somente cria
-pedidos manuais. Um agendador futuro criará tarefas nessa mesma fila e usará o mesmo
-worker e pipeline. Frequência, regras por talhão, consumo automático e interface de
-monitoramento serão definidos na etapa correspondente.
+A migration 0003 adiciona configurações de acompanhamento e alertas, com RLS.
+O worker verifica agendamentos a cada minuto; um lock transacional do agendador
+impede concorrência entre instâncias, e a conta é bloqueada para reservar uso.
+Cada pedido tem uma chave idempotente por talhão, configuração e data. Não há
+pedidos automáticos simultâneos para o mesmo talhão. Sem saldo, nova verificação
+ocorre em uma hora. Após o pedido, a próxima execução é agendada para sete dias.
+
+A configuração registra cultura, fase atual, período da safra e queda mínima absoluta de NDVI.
+Pedidos usam somente satélite, janela dos últimos sete dias completos em UTC e
+limite de 40% de nuvens na cena. A cobertura válida do talhão é avaliada à parte.
+Ao finalizar, a data real da cena fica registrada no banco. Comparações usam a
+mesma revisão de geometria e geração de configuração, datas distintas dentro da
+safra, intervalo máximo de 30 dias e cobertura válida de pelo menos 90% em ambas.
+Conclusão, alerta e consumo são persistidos na mesma transação. Alertas ficam na
+interface para conferência. Cultura não altera os limiares automaticamente;
+a fase é informada pelo usuário, com alertas suspensos na maturação e colheita.
+Modelos automáticos de fase fenológica ficam para uma evolução.
 
 ## Operação
 

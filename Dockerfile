@@ -1,7 +1,15 @@
+FROM node:22-bookworm-slim AS frontend
+WORKDIR /ui
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend ./
+RUN npm run build
+
 FROM rust:1.99.0-slim-bookworm AS build
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY --from=frontend /src/ui ./src/ui
 COPY migrations ./migrations
 RUN cargo build --release --locked
 

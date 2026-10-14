@@ -3,7 +3,7 @@
 O Delta Mapas usa Rust/Axum e PostgreSQL/PostGIS. Há uma aplicação web com login
 individual, propriedades, talhões, solicitação de NDVI, histórico e downloads privados.
 Cada usuário é um tenant: não existem organizações, membros ou login de empresa.
-Cobrança recorrente, recuperação de senha e monitoramento automático ainda não estão implementados.
+Cobrança recorrente e recuperação de senha ainda não estão implementadas. O acompanhamento semanal e os alertas internos são configuráveis por talhão.
 
 ## Iniciar a aplicação local
 
@@ -63,7 +63,7 @@ a senha de uma conta já existente.
 - Conclusão e consumo são gravados em uma única transação, condicionada à posse atual;
   falha definitiva libera a reserva. Tentativas vencidas não publicam resultados.
 - Os downloads verificam sessão e dono, não expõem o volume como diretório estático.
-- Origem `manual`/`automatic` existe no banco; a API pública só cria pedidos manuais.
+- A API cria pedidos manuais; o agendador no worker cria pedidos automáticos conforme a configuração de cada talhão.
 
 Reutilização de resultado por cena com chaves de solicitação diferentes ainda não está
 implementada. Arquivos de tentativas perdidas por queda podem ficar órfãos; coleta
@@ -253,8 +253,8 @@ necessário antes de liberar clientes. Não apagar volumes durante atualizaçõe
 ## Próxima entrega
 
 Adicionar recuperação de acesso, validação de e-mail, planos/pagamentos
-e backup/restauração. O agendador automático
-entrará pela mesma fila e pipeline; ainda não há configuração de acompanhamento.
+e backup/restauração. O acompanhamento semanal já utiliza a mesma fila e pipeline;
+consulte o README para ativação, consumo de créditos e critérios de alerta.
 
 Referências: [Process API](https://documentation.dataspace.copernicus.eu/APIs/SentinelHub/ApiReference.html),
 [Sentinel-2 L2A](https://documentation.dataspace.copernicus.eu/APIs/SentinelHub/Data/S2L2A.html),
@@ -276,3 +276,23 @@ versões antigas interpretam os snapshots como WGS84. Faça um backup antes da a
 Os arquivos de análises concluídas ficam intactos no CRS original. Só os novos produtos
 usam `schema_version=2` / `ndvi-v2-sirgas` com exportação métrica; não há regravação silenciosa
 nem novo download de satélite para converter o cadastro.
+
+## Prancha cartográfica e relatório
+
+A partir da migration 0004 e do pipeline `ndvi-v3-cartography`, cada análise gera
+`map.pdf` (A4 paisagem) e `report.pdf` (síntese A4 retrato + mesma prancha cartográfica).
+O PNG simples e o GeoTIFF permanecem disponíveis. Downloads seguem a autorização
+por conta e tentativa de processamento; produtos históricos não são reescritos.
+A interface só oferece `map.pdf` quando listado no `analysis.json` do resultado.
+
+A escala usa metros projetados em SIRGAS/UTM e pontos físicos PDF (72 pontos/polegada).
+O norte geográfico é obtido projetando um deslocamento de latitude no centroide;
+o norte de quadrícula não é confundido com ele. O contorno usa todas as partes e
+anéis interiores da geometria original. A distribuição por classes é calculada
+na grade original, evitando que a reamostragem UTM altere os percentuais do relatório.
+As fontes Liberation Sans são embutidas e acompanham sua licença SIL OFL.
+
+O contexto de nomes, cultura e fase é capturado no pedido. Valores ausentes são
+identificados como não informados; não há inferência de solo, clima ou diagnóstico.
+A conferência `scripts/verify_demo.py` valida também a distribuição, estrutura dos
+PDFs, fontes embutidas e escala numérica pela dimensão efetiva da imagem no documento.
