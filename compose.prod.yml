@@ -1,0 +1,79 @@
+name: delta-rust
+x-app: &app
+  stop_signal: SIGINT
+  image: ${APP_IMAGE:?Configure APP_IMAGE com uma release publicada}
+  environment: &app-env
+    DATABASE_URL: postgres://delta_app:${DELTA_DB_PASSWORD:?Configure DELTA_DB_PASSWORD}@postgres:5432/delta_maps
+    APP_ORIGIN: https://${APP_DOMAIN:?Configure APP_DOMAIN}
+    APP_BIND: 0.0.0.0:3010
+    COOKIE_SECURE: "true"
+    REGISTRATION_ENABLED: "false"
+    DEMO_ENABLED: "false"
+    STORAGE_DIRECTORY: /data/private
+    COPERNICUS_CLIENT_ID: ${COPERNICUS_CLIENT_ID:-}
+    COPERNICUS_CLIENT_SECRET: ${COPERNICUS_CLIENT_SECRET:-}
+  volumes: ["private_data:/data"]
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: ["ALL"]
+  restart: unless-stopped
+  logging: &logging
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+services:
+  postgres:
+    image: postgis/postgis:17-3.5
+    environment:
+      POSTGRES_DB: delta_maps
+      POSTGRES_USER: delta_owner
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?Configure POSTGRES_ADMIN_PASSWORD}
+      APP_DB_PASSWORD: ${DELTA_DB_PASSWORD:?Configure DELTA_DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./ops/init-db.sh:/docker-entrypoint-initdb.d/10-delta.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U delta_owner -d delta_maps"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+    logging: *logging
+  migrate:
+    <<: *app
+    command: ["migrate"]
+    restart: "no"
+    depends_on:
+      postgres: {condition: service_healthy}
+  app:
+    <<: *app
+    command: ["serve"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "delta-analysis", "health-check"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  worker:
+    <<: *app
+    command: ["worker"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    stop_grace_period: 2m
+  proxy:
+    image: caddy:2.10-alpine
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?Configure APP_DOMAIN}
+    ports: ["80:80", "443:443", "443:443/udp"]
+    volumes:
+      - ./ops/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app: {condition: service_healthy}
+    restart: unless-stopped
+    logging: *logging
+volumes:
+  postgres_data:
+  private_data:
+  caddy_data:
+  caddy_config:

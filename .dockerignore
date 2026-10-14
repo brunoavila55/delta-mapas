@@ -1,0 +1,9 @@
+target
+output
+.git
+.env
+.env.*
+tests
+scripts
+docs
+MVP-e-arquitetura.md

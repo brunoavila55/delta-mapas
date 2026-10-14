@@ -1,0 +1,28 @@
+name: Rust checks
+on: [push, pull_request]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain
+        run: rustup show
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --locked
+      - name: Prepare isolated PostgreSQL
+        run: |
+          python3 scripts/setup-dev.py
+          docker compose up -d --wait postgres
+      - name: Account isolation and durable queue
+        run: scripts/test-saas.sh
+      - name: Container smoke test
+        run: |
+          docker build -t delta-analysis:test .
+          docker run --rm delta-analysis:test demo --area examples/talhao.geojson --output /data/demo
+      - name: Cleanup development database
+        if: always()
+        run: docker compose down --volumes

@@ -1,0 +1,65 @@
+name: delta-rust-dev
+x-app: &app
+  stop_signal: SIGINT
+  image: delta-analysis:local
+  build: .
+  environment: &app-env
+    DATABASE_URL: postgres://delta_app:${DELTA_DB_PASSWORD:?Configure DELTA_DB_PASSWORD}@postgres:5432/delta_maps
+    APP_ORIGIN: http://127.0.0.1:3010
+    APP_BIND: 0.0.0.0:3010
+    COOKIE_SECURE: "false"
+    REGISTRATION_ENABLED: "true"
+    DEMO_ENABLED: "true"
+    STORAGE_DIRECTORY: /data/private
+    COPERNICUS_CLIENT_ID: ${COPERNICUS_CLIENT_ID:-}
+    COPERNICUS_CLIENT_SECRET: ${COPERNICUS_CLIENT_SECRET:-}
+  volumes:
+    - private_data:/data
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: ["ALL"]
+  restart: unless-stopped
+services:
+  postgres:
+    image: postgis/postgis:17-3.5
+    environment:
+      POSTGRES_DB: delta_maps
+      POSTGRES_USER: delta_owner
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?Configure POSTGRES_ADMIN_PASSWORD}
+      APP_DB_PASSWORD: ${DELTA_DB_PASSWORD:?Configure DELTA_DB_PASSWORD}
+    ports:
+      - "127.0.0.1:5439:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./ops/init-db.sh:/docker-entrypoint-initdb.d/10-delta.sh:ro,Z
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U delta_owner -d delta_maps"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+  migrate:
+    <<: *app
+    command: ["migrate"]
+    restart: "no"
+    depends_on:
+      postgres: {condition: service_healthy}
+  app:
+    <<: *app
+    command: ["serve"]
+    ports: ["127.0.0.1:3010:3010"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "delta-analysis", "health-check"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  worker:
+    <<: *app
+    command: ["worker"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    stop_grace_period: 2m
+volumes:
+  postgres_data:
+  private_data:

@@ -1,272 +1,278 @@
-# Delta Mapas
+# Delta Mapas — SaaS de mapas agrícolas em Rust
 
-Base do MVP de um SaaS multitenant para geração de produtos de sensoriamento remoto agrícola. O
-projeto sobe Django/GeoDjango, PostgreSQL/PostGIS, Celery, Redis e MinIO, com interface renderizada
-por Django Templates + HTMX e autenticação por sessão,
-propriedades geoespaciais, cobrança transacional por créditos, criação idempotente de `MapJob` e
-seleção de cenas Sentinel-2 via STAC. A interface web oferece login, painel, cadastro de áreas,
-acompanhamento de jobs, prévia dos mapas e downloads autenticados. A obtenção do recorte raster e o
-cálculo de NDVI usam a Sentinel Hub Process API, autenticada com OAuth2 Client Credentials. O pipeline gera mapas
-cartográficos PNG/PDF, persiste somente os produtos finais no MinIO e captura o crédito após a
-conclusão.
+Aplicação web em Rust com login
+individual, propriedades, talhões, solicitação de NDVI, histórico e downloads privados.
+Cada usuário é um tenant: não existem organizações, membros ou login de empresa.
+Cobrança recorrente, recuperação de senha e monitoramento automático ainda não estão implementados.
 
-## Componentes
+## Iniciar a aplicação local
 
-- Backend: Django 5.2 LTS, GeoDjango e `django-tenants`;
-- banco: PostgreSQL 17 + PostGIS 3.5;
-- tarefas: Celery com Redis, inicialmente com concorrência 1;
-- operação: Celery Beat, reconciliação multi-tenant com lock e alertas JSON/webhook deduplicados;
-- arquivos: `django-storages` sobre API S3 do MinIO, bucket privado;
-- satélite: Copernicus STAC para descoberta e Sentinel Hub Process API para obtenção dos recortes
-  raster;
-- cartografia: Matplotlib sobre grade UTM, com coordenadas geográficas transformadas por PyProj;
-- interface web: Django Templates, HTMX, CSS e JavaScript progressivo sem etapa de build;
-- produção: Gunicorn, WhiteNoise, Caddy como proxy HTTPS e Compose sem portas internas
-  publicadas;
-- qualidade: pytest, Ruff e Black.
-
-Veja [docs/architecture.md](docs/architecture.md) para as decisões e os limites desta etapa.
-O estágio geoespacial atual está em [docs/stac-processing.md](docs/stac-processing.md).
-Renderização, persistência e downloads estão em [docs/generated-maps.md](docs/generated-maps.md).
-As telas, a sessão e os fluxos do cliente estão em [docs/frontend.md](docs/frontend.md).
-Expiração de jobs e auditoria do storage estão em [docs/reconciliation.md](docs/reconciliation.md).
-O deploy de produção na Oracle Cloud está em [docs/deployment-oci.md](docs/deployment-oci.md).
-O contexto consolidado para retomada do desenvolvimento está em [context.md](context.md).
-
-## Estrutura
-
-```text
-.
-├── backend/
-│   ├── apps/
-│   │   ├── accounts/
-│   │   ├── billing/
-│   │   ├── maps/
-│   │   ├── properties/
-│   │   └── tenants/
-│   ├── delta_maps/
-│   ├── requirements/
-│   ├── Dockerfile
-│   ├── Dockerfile.prod
-│   └── manage.py
-├── docs/
-│   ├── architecture.md
-│   ├── deployment-oci.md
-│   └── stac-processing.md
-├── ops/
-│   ├── backup/
-│   ├── caddy/
-│   └── systemd/
-├── .env.example
-├── .env.prod.example
-├── context.md
-├── docker-compose.yml
-└── docker-compose.prod.yml
+```sh
+python3 scripts/setup-dev.py
+docker compose up -d --build
 ```
 
-## Pré-requisitos
+Abra **http://127.0.0.1:3010** e crie sua conta. O Compose inicia PostgreSQL/PostGIS,
+migrations, servidor e worker, com imagens iguais para os três últimos modos.
+Migrations são executadas antes dos consumidores. O banco só publica uma porta local
+de desenvolvimento (5439); não usa nem altera outros bancos existentes no computador.
 
-- Docker Desktop/Engine com Docker Compose v2;
-- portas locais 8000 e 9001 livres.
+O ambiente local habilita demonstrações identificadas como **dados sintéticos**.
+Cadastre uma propriedade, importe seu ZIP do CAR ou GeoJSON, solicite a demonstração e consulte o
+mapa e os arquivos. As análises de satélite reais precisam de credenciais configuradas
+no servidor e no worker. O limite inicial é de dez análises por conta, sem renovação
+mensal nem cobrança nesta etapa.
 
-As imagens escolhidas são publicadas para arquiteturas usuais de contêiner, visando desenvolvimento
-em amd64 e implantação arm64. Valide todos os artefatos na máquina OCI antes do deploy de produção.
+Para desenvolver sem recompilar containers a cada alteração:
 
-## Início rápido
-
-Opcionalmente copie `.env.example` para `.env` e troque todos os valores marcados como `change-me`.
-Os defaults do Compose permitem um primeiro boot local sem o arquivo, mas nunca devem ser usados em
-produção.
-
-```bash
-docker compose up --build
+```sh
+docker compose up -d --wait postgres
+scripts/dev.sh migrate
+scripts/dev.sh serve
+# Em outro terminal:
+scripts/dev.sh worker
 ```
 
-Em outro terminal, crie o tenant local, domínio, superusuário e dez créditos iniciais:
+Não execute o servidor Cargo e o servidor Compose ao mesmo tempo na porta 3010.
+Os modos Cargo e Compose usam storages diferentes: diretório local e volume Docker,
+respectivamente. Escolha um modo por instalação; trocar só o caminho de storage não
+migra arquivos de análises existentes.
 
-```bash
-docker compose exec \
-  -e DEV_SUPERUSER_PASSWORD='escolha-uma-senha-local' \
-  backend python manage.py setup_dev
+Para provisionar uma conta com o cadastro público fechado, use `create-user --email`
+com `DELTA_INITIAL_PASSWORD` definido temporariamente no ambiente. O comando preserva
+a senha de uma conta já existente.
+
+## Isolamento e execução
+
+- Sessões persistentes: token aleatório em cookie HttpOnly, SameSite=Strict e Secure
+  em produção; somente o SHA-256 do token é armazenado no banco.
+- Senhas com Argon2id, CSRF por token de sessão e validação de Origin.
+- Limites de tentativas por e-mail e por IP da conexão. Atrás do proxy, o limite por
+  conexão agrega os clientes; cabeçalho X-Forwarded-For não é confiado indiscriminadamente.
+- `user_id` em propriedades, talhões e análises; todas as rotas filtram pelo dono.
+- PostgreSQL RLS com FORCE nas três tabelas operacionais. O contexto de usuário é
+  local à transação; consultas sem contexto não veem linhas. O app recusa roles
+  SUPERUSER/BYPASSRLS. Chaves estrangeiras compostas impedem relações entre donos distintos.
+- Worker usa um contexto interno para consumir a fila de todas as contas. Servidor
+  e worker são serviços confiáveis, não usuários com acesso direto ao SQL.
+- Solicitação e reserva são transacionais; Idempotency-Key evita duplicar uma mesma
+  solicitação. Uma chave reapresentada com conteúdo diferente retorna conflito.
+- Snapshot de geometria e revisão por análise; editar um talhão preserva análises antigas.
+- Posse temporária, heartbeat, recuperação de tarefas interrompidas e até três tentativas,
+  com espera progressiva. Cada tentativa usa um diretório próprio.
+- Conclusão e consumo são gravados em uma única transação, condicionada à posse atual;
+  falha definitiva libera a reserva. Tentativas vencidas não publicam resultados.
+- Os downloads verificam sessão e dono, não expõem o volume como diretório estático.
+- Origem `manual`/`automatic` existe no banco; a API pública só cria pedidos manuais.
+
+Reutilização de resultado por cena com chaves de solicitação diferentes ainda não está
+implementada. Arquivos de tentativas perdidas por queda podem ficar órfãos; coleta
+periódica de órfãos é uma pendência operacional antes da liberação pública.
+
+## O que está implementado
+
+- Entrada GeoJSON Polygon/MultiPolygon ou Feature em WGS84, com validação geométrica.
+- Importação direta de ZIP do CAR, incluindo arquivos ZIP internos por camada, com
+  seleção de Área do Imóvel, leitura de SHP/SHX/DBF/PRJ e cadastro em SIRGAS 2000.
+- Download autenticado de B04/B08/SCL/dataMask pela Process API do Copernicus.
+- Seleção de uma única tile, priorizando menor nuvem e depois data mais recente;
+  metadados da tile selecionada são obtidos do próprio processamento.
+- NDVI em Rust, com máscara do talhão, buracos, nuvens, sombras, nodata e valores inválidos.
+- Estatísticas sobre pixels válidos, com denominador de cobertura limitado ao talhão.
+- Cadastro em SIRGAS 2000/EPSG:4674; GeoJSON público convertido para WGS84.
+- GeoTIFF, PNG e PDF em SIRGAS 2000/UTM, fuso automático, grade métrica de 10 m.
+- JSON de proveniência distingue CRS cadastral, grade original e grade exportada.
+- Saída em diretório temporário, publicado ao concluir; resultados existentes não são sobrescritos.
+- Container com usuário sem privilégios, sem Python, GDAL, Redis ou Node em runtime.
+
+## Rodar sem credenciais
+
+Instale Rust via [rustup](https://rustup.rs/). O `rust-toolchain.toml` fixa a versão.
+
+```sh
+cargo run --locked -- demo --area examples/talhao.geojson --output output/demo
 ```
 
-O comando é idempotente: pode ser repetido sem duplicar o bônus inicial. Depois do seed, `localhost`
-resolve o tenant `demo` e `public.localhost` resolve o schema público. Em alguns sistemas pode ser
-necessário adicionar `127.0.0.1 public.localhost` ao arquivo de hosts.
+Os dados desse comando são **sintéticos** e o talhão é ilustrativo. Isso está indicado
+no PDF, JSON e TIFF de entrada. O comando exercita o mesmo leitor, cálculo e exportação
+utilizados pelas análises reais. Use outro diretório para executar novamente.
 
-## Credenciais Copernicus OAuth
+Saídas: `bands.tif`, `ndvi.tif`, `ndvi.png`, `report.pdf`, `analysis.json`.
 
-A pesquisa no STAC não exige autenticação. Para processar os recortes raster, crie um OAuth client em
-[Copernicus Data Space — User Settings](https://shapps.dataspace.copernicus.eu/dashboard/#/account/settings)
-e adicione os valores somente ao `.env` local da raiz:
+## Importar CAR
 
-```env
+Na tela de cadastro de talhão, selecione **Importar área: ZIP do CAR ou GeoJSON**.
+O ZIP pode conter as camadas internas `Area_do_Imovel.zip`, `Cobertura_do_Solo.zip`
+e `Reserva_Legal.zip`. O importador escolhe a camada Área do Imóvel e o registro da
+área total pelo tema. Não soma a área líquida nem a reserva legal ao limite total.
+
+O CAR representa o limite cadastral da propriedade inteira. A importação não identifica
+automaticamente os talhões de cultivo. A área importada pode ser analisada diretamente;
+talhões específicos devem ser delimitados separadamente.
+
+Também há conversão local, sem chamadas ao Copernicus:
+
+```sh
+cargo run --locked -- import-car --input meu-car.zip --output area-imovel.geojson
+```
+
+Limites: ZIP até 10 MB, 32 MB descompactados no conjunto, 64 arquivos, até dois níveis
+de ZIPs internos, 256 feições e 10 mil coordenadas na camada selecionada. Nesta versão
+são aceitos PRJs WKT1 geográficos em SIRGAS 2000/EPSG:4674 ou WGS84/EPSG:4326,
+em graus, com longitude/latitude. PRJ ausente ou incompatível é rejeitado; não há
+adivinhação de projeção. ZIPs projetados em UTM/SAD69 exigem conversão antes de importar.
+
+O endpoint `/api/imports/car` exige login, Origin e CSRF. A leitura é feita em memória,
+sem extrair caminhos do ZIP para o disco, e não armazena o DBF nem seus atributos
+pessoais. A importação retorna geometria e informações de seleção; o cadastro
+persiste somente a área e o nome escolhido pelo usuário.
+
+## Processar bandas fornecidas localmente
+
+```sh
+cargo run --locked -- analyze --area meu-talhao.geojson --bands minhas-bandas.tif --output output/local
+```
+
+Contrato: quatro bandas **intercaladas Float32**, na ordem B04, B08, SCL, dataMask.
+As duas primeiras são reflectâncias, não números digitais sem conversão. GeoTIFF
+north-up em EPSG:4326 com PixelIsArea e tags ModelPixelScale/ModelTiepoint.
+A CLI não identifica automaticamente ordem/unidade de bandas de arquivos externos.
+Data e origem são marcadas como não verificadas no resultado local.
+
+## Obter uma análise real
+
+Configure `COPERNICUS_CLIENT_ID` e `COPERNICUS_CLIENT_SECRET` no ambiente por meio
+do seu gerenciador de segredos. Não passe segredos em argumentos nem os inclua no Git.
+São credenciais OAuth de Sentinel Hub/CDSE, não chaves de S3 nem a senha da conta.
+
+No Compose local, adicione ao `.env` da raiz deste projeto:
+
+```dotenv
 COPERNICUS_CLIENT_ID=seu_client_id
 COPERNICUS_CLIENT_SECRET=seu_client_secret
-COPERNICUS_TOKEN_URL=https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token
-COPERNICUS_PROCESS_URL=https://sh.dataspace.copernicus.eu/process/v1
 ```
 
-O `.env` está ignorado pelo Git. Nunca exponha o client secret no navegador, em logs ou em arquivos
-versionados. Backend e worker são os únicos consumidores. Depois de adicionar ou alterar as
-credenciais, recrie esses serviços para aplicar o ambiente:
+Depois execute `docker compose up -d --no-deps --force-recreate app worker`.
+Recriar os containers aplica as novas variáveis; um simples restart não atualiza
+o ambiente. Na interface, selecione **NDVI · imagem de satélite** para usar o provedor.
+O aplicativo solicita o access token automaticamente; não há campo para colar
+um bearer token temporário. Em produção, use os mesmos campos em `.env.prod`.
 
-```bash
-docker compose up --build -d backend celery_worker
+```sh
+cargo run --locked -- fetch --area meu-talhao.geojson --from 2026-09-01 --to 2026-09-30 --max-cloud 20 --resolution 10 --output output/real
 ```
 
-O token é obtido pelo fluxo Client Credentials, mantido somente em memória e renovado antes da
-expiração. Consulte `.env.example` para timeouts, retries, resolução e limites de segurança.
+Esse comando solicita processamento externo e pode consumir a quota do provedor.
+Não há retries automáticos nesta prova. Falhas HTTP são retornadas sem imprimir tokens
+ou corpos de autenticação. Respostas e dimensões têm limites de tamanho e tempo.
 
-## Produção
+A integração foi implementada a partir da documentação oficial; o teste de download
+real depende de credenciais e de uma área fornecidas para validação.
 
-O ambiente de produção usa imagens sem bind mount, Gunicorn, arquivos estáticos comprimidos pelo
-WhiteNoise e Caddy como único serviço público. PostgreSQL, Redis, MinIO e Django não publicam portas
-no host. O Caddy termina HTTPS e encaminha toda a aplicação Django na mesma origem.
+## Container de processamento
 
-Copie `.env.prod.example` para `.env.prod`, preencha os segredos e valide antes de iniciar:
-
-```bash
-docker compose --env-file .env.prod -f docker-compose.prod.yml config --quiet
-docker compose --env-file .env.prod -f docker-compose.prod.yml build --pull
-docker compose --env-file .env.prod -f docker-compose.prod.yml up -d
+```sh
+docker build -t delta-analysis:0.1.0 .
+docker run --rm delta-analysis:0.1.0 --help
+mkdir -p output
+docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/output:/data:Z" delta-analysis:0.1.0 demo --area examples/talhao.geojson --output /data/demo-container
 ```
 
-Os serviços one-shot aplicam migrations, criam o bucket privado e provisionam o primeiro tenant de
-forma idempotente. Requisitos de DNS, rede OCI, backup, atualização e checklist de liberação estão no
-[runbook de deploy](docs/deployment-oci.md).
+O sufixo `:Z` no bind mount atende hosts com SELinux; pode ser omitido nos demais.
+Não é necessário instalar bibliotecas geoespaciais no host.
 
-O usuário criado por `provision_tenant` é proprietário somente do tenant e não recebe `is_staff` ou
-`is_superuser`. Crie um operador global separado com `createsuperuser` apenas quando o Django Admin
-for realmente necessário.
+O teste local usa x86_64. Build e execução ARM64 precisam de validação antes de
+implantar em uma VM Ampere; não considerar a existência de uma imagem base ARM64
+como prova de compatibilidade do aplicativo completo.
 
-Para criar localmente um snapshot autenticado de PostgreSQL e MinIO em `backups/`, configure
-`BACKUP_SIGNING_KEY` e `BACKUP_ENVIRONMENT` e execute:
+## Limites deliberados da prova
 
-```bash
-docker compose --profile ops run --rm backup
+- Máximo de 4 milhões de pixels, 80 MB de arquivo e 10 mil coordenadas.
+- Download: até 2.500 pixels por eixo; resolução nominal mínima de 10 m.
+- A solicitação ao Copernicus mantém WGS84, com dimensionamento aproximado pela
+  latitude central. O NDVI é calculado nessa grade e reamostrado por vizinho mais próximo
+  para exportação em SIRGAS 2000/UTM de 10 m. Isso não aumenta a resolução da observação.
+  Estatísticas e cobertura permanecem na grade original, indicada em `analysis.json`.
+- Exportação limitada aos fusos SIRGAS 18–25S e 18–22N. Uma área usa o fuso do centro;
+  extensão máxima de 1 grau por eixo. Datum SIRGAS/GRS80 com transformação estática
+  para WGS84, adequada à análise de 10 m; não é um ajuste geodésico por época.
+- Uma única tile selecionada pode cobrir só parte de um talhão na borda de tiles.
+  O resultado mostra cobertura válida; não há preenchimento com outra cena/data.
+- A porcentagem de nuvens da tile não mede nuvens especificamente no talhão.
+- Classes SCL aceitas: vegetação, solo e água (4, 5, 6). Demais classes são descartadas.
+- PNG mostra a grade; a composição cartográfica e legenda estão no PDF.
+- Os comandos de processamento direto são locais e não passam pela conta ou pela fila.
+  O servidor e o worker fazem o vínculo com o cliente e o controle de uso.
+
+## Verificação
+
+```sh
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+scripts/test-saas.sh
 ```
 
-## Migrations
+`scripts/verify_demo.py` compara o NDVI e as estatísticas com NumPy/Rasterio e a
+exportação UTM com PROJ/pyproj e Shapely, independentes do código Rust.
+Essas dependências Python são **somente QA**.
 
-O backend executa migrations compartilhadas ao iniciar. Durante o desenvolvimento:
+`scripts/verify_car.py` confere um CAR com PyShp, PROJ/pyproj e Shapely, comparando
+geometria e área após a transformação. O ZIP privado utilizado na validação não é
+incluído em fixtures ou no repositório.
 
-```bash
-# Gerar migrations após alterar models
-docker compose run --rm backend python manage.py makemigrations
-
-# Aplicar somente apps compartilhados ao schema public
-docker compose run --rm backend python manage.py migrate_schemas --shared
-
-# Aplicar apps de tenant a todos os tenants existentes
-docker compose run --rm backend python manage.py migrate_schemas --tenant
+```sh
+python3 -m venv target/qa-venv
+target/qa-venv/bin/pip install numpy rasterio pypdf pyproj shapely pyshp
+target/qa-venv/bin/python scripts/verify_demo.py output/demo
 ```
 
-Criar um superusuário manualmente, se o seed não for desejado:
+Renderize o PDF com `pdftoppm -png -scale-to 1400 output/demo/report.pdf output/demo/report-preview`
+para conferir a composição visual.
 
-```bash
-docker compose exec backend python manage.py createsuperuser
+O teste SaaS cria um banco temporário com PostGIS, verifica duas contas, downloads,
+RLS, recuperação de lease, reservas e concorrência, e remove apenas esse banco ao terminar.
+É ignorado pelo `cargo test` comum e executado explicitamente pelo script e pelo workflow.
+
+## Produção na OCI
+
+`compose.prod.yml` contém servidor, worker, PostgreSQL/PostGIS e Caddy. Diferentemente
+do Compose local, não publica o banco ou o servidor diretamente, exige cookies HTTPS,
+fecha cadastro público e desativa demonstrações. Copie `.env.prod.example` e informe
+domínio, imagem de release já publicada, senhas independentes e credenciais do provedor.
+
+```sh
+docker compose --env-file .env.prod -f compose.prod.yml config --quiet
+docker compose --env-file .env.prod -f compose.prod.yml up -d
 ```
 
-## URLs locais
+O manifesto foi preparado para a OCI, mas ainda não foi implantado numa VM.
+Validar a arquitetura da VM, o provedor real, DNS/HTTPS e recuperação de backup é
+necessário antes de liberar clientes. Não apagar volumes durante atualizações.
 
-| Serviço | URL |
-| --- | --- |
-| Interface web | http://localhost:8000/ |
-| Health check | http://localhost:8000/health/ |
-| Django admin | http://localhost:8000/admin/ |
-| MinIO Console | http://localhost:9001 |
+## Próxima entrega
 
-As credenciais do MinIO vêm de `MINIO_ACCESS_KEY` e `MINIO_SECRET_KEY`. A API interna do MinIO não é
-publicada no host; backend e worker acessam `minio:9000` pela rede do Compose.
+Conferir uma análise real, evoluir a grade métrica, adicionar recuperação de acesso,
+validação de e-mail, planos/pagamentos e backup/restauração. O agendador automático
+entrará pela mesma fila e pipeline; ainda não há configuração de acompanhamento.
 
-## Models iniciais
+Referências: [Process API](https://documentation.dataspace.copernicus.eu/APIs/SentinelHub/ApiReference.html),
+[Sentinel-2 L2A](https://documentation.dataspace.copernicus.eu/APIs/SentinelHub/Data/S2L2A.html),
+[metadados de processamento](https://documentation.dataspace.copernicus.eu/APIs/SentinelHub/UserGuides/Metadata.html).
 
-- `Tenant` e `Domain`: organização, schema e hostname;
-- `User` e `Membership`: identidade global e participação multi-organização com role;
-- `Property`: geometria `MultiPolygon` em EPSG:4326 e área recalculada no backend;
-- `MapJob`: snapshot da geometria, status explícito, progresso e rastreabilidade Celery/STAC;
-- `GeneratedMap`: produto concluído, metadados e arquivos privados PNG/PDF;
-- `CreditAccount`: saldos disponível e reservado materializados por tenant;
-- `CreditTransaction`: ledger idempotente e auditável, opcionalmente associado a um job.
 
-Os models de domínio usam UUID como chave pública. `MapJob` e `GeneratedMap` são separados para não
-misturar estado transitório com um produto concluído.
+## Referencial SIRGAS 2000
 
-## Fluxo de processamento
+A migration `0002_sirgas2000.sql` transforma os campos existentes e os snapshots
+geométricos das análises para EPSG:4674, preservando IDs, revisões, donos e cotas.
+O PostGIS calcula hectares no elipsoide GRS80. Geometrias de cadastro e snapshots
+carregam `geometry_crs=4674`. A API web continua usando GeoJSON RFC 7946/WGS84;
+`storage_crs` distingue o sistema do cadastro do sistema de transporte.
+O retorno da importação CAR inclui `cadastral_geometry`/`cadastral_crs`, além do
+GeoJSON WGS84 usado pelo navegador.
 
-A criação de um job pela interface reserva o preço vigente do índice. O worker pesquisa a melhor
-cena, obtém um GeoTIFF temporário com B04, B08, SCL e
-`dataMask`, aplica as máscaras, calcula o NDVI, renderiza PNG/PDF e envia os arquivos finais ao
-MinIO. `GeneratedMap`, conclusão do job e captura do crédito são finalizados transacionalmente. Em
-qualquer falha anterior, os temporários são removidos e a reserva é liberada.
-
-O cancelamento devolve a reserva somente enquanto o job está pendente ou procurando uma cena. A
-partir de `DOWNLOADING`, o crédito é capturado porque a solicitação paga ao provedor já começou.
-
-## Controles de segurança do MVP
-
-- produção recusa `DJANGO_SECRET_KEY` ausente, curta ou igual à chave insegura de desenvolvimento;
-- login é limitado por IP e por conta/tenant, com contadores compartilhados no Redis;
-- geometrias e shapefiles têm limites de coordenadas, componentes, profundidade e feições antes de
-  operações GEOS/Shapely custosas;
-- OAuth e Process API exigem HTTPS, não seguem redirects e aplicam limites de resposta; o transporte
-  STAC também limita cada página e o total recebido;
-- snapshots incluem HMAC do arquivo de checksums e vínculo ao ambiente de origem antes de qualquer
-  restauração destrutiva.
-
-Para ajustar créditos manualmente com ledger auditável:
-
-```bash
-docker compose exec backend python manage.py adjust_credits \
-  --schema demo \
-  --delta 5 \
-  --reason 'Crédito de suporte' \
-  --idempotency-key support-ticket-123 \
-  --username admin
-```
-
-Para auditar jobs travados e arquivos do tenant sem modificar dados:
-
-```bash
-docker compose exec backend python manage.py reconcile_maps --schema demo
-```
-
-Use `--apply` para expirar jobs travados e devolver suas reservas. A exclusão de objetos órfãos
-exige as duas opções `--apply --delete-orphans`; produtos com arquivo ausente são apenas reportados.
-
-Em produção, `celery_beat` agenda a mesma reconciliação para todos os tenants a cada 15 minutos por
-padrão. Um advisory lock impede execuções sobrepostas, jobs travados são expirados automaticamente e
-órfãos não são excluídos. Anomalias sempre aparecem nos logs JSON e podem ser enviadas a um webhook
-HTTPS assinado e deduplicado. Consulte [docs/reconciliation.md](docs/reconciliation.md) para as
-variáveis e o contrato do alerta.
-
-## Verificações
-
-```bash
-docker compose run --rm backend python manage.py check
-docker compose run --rm backend pytest
-docker compose run --rm backend ruff check --no-cache .
-docker compose config --quiet
-docker compose --env-file .env.prod -f docker-compose.prod.yml config --quiet
-```
-
-Para verificar o worker:
-
-```bash
-docker compose exec backend python manage.py shell -c \
-  "from apps.maps.tasks import healthcheck; print(healthcheck.delay().get(timeout=10))"
-```
-
-## Limitações deliberadas desta etapa
-
-- o raster Sentinel é temporário e removido após o job; somente produtos finais são armazenados;
-- o template cartográfico atual é fixo em A4 paisagem e ainda não possui mapas-base externos;
-- produtos com arquivo ausente são reportados para intervenção, sem recomposição automática;
-- o deploy atual concentra aplicação, banco, fila e storage em uma única VM; alta disponibilidade e
-  storage externo ficam para uma etapa futura.
-
-## Próximo passo
-
-Concluir a implantação real na OCI, copiar os snapshots para storage externo e validar o fluxo ponta
-a ponta, os timers e o monitoramento no domínio público.
+Pare servidor e worker antes de aplicar essa migration e iniciar os novos binários:
+versões antigas interpretam os snapshots como WGS84. Faça um backup antes da atualização.
+Os arquivos de análises concluídas ficam intactos no CRS original. Só os novos produtos
+usam `schema_version=2` / `ndvi-v2-sirgas` com exportação métrica; não há regravação silenciosa
+nem novo download de satélite para converter o cadastro.
