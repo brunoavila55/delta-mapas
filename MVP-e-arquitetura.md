@@ -1,10 +1,10 @@
-# Novo SaaS de mapas agrícolas em Rust
+# Arquitetura do Delta Mapas
 
 Revisão: 14/10/2026. Este documento substitui a proposta inicial com organizações.
 
 ## Decisões confirmadas
 
-- Produto novo; o Delta Mapas antigo serve apenas como referência do problema.
+- Aplicação principal em Rust; a implementação antiga em Django foi removida.
 - Backend e processamento em Rust, produção em uma VM da OCI.
 - Login individual: cada conta é um tenant, sem cadastro de empresa, membros ou equipes.
 - Primeira versão sob demanda; monitoramento automático previsto para depois.
@@ -90,8 +90,7 @@ backup externo e restauração ensaiada. Uma VM não fornece alta disponibilidad
 
 ## Entregas ainda necessárias
 
-- Validar cena real e condições comerciais do provedor.
-- Grade métrica de produção e cobertura de áreas na borda de tiles.
+- Confirmar condições comerciais do provedor e ampliar cobertura de áreas na borda de tiles.
 - Desenho de áreas no mapa; atualmente há importação de GeoJSON/ZIP do CAR e prévia do contorno.
   O CAR importa o limite do imóvel inteiro, não uma segmentação automática em talhões.
 - Recuperação de senha e verificação de e-mail antes do autocadastro público em produção.

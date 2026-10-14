@@ -1,41 +1,23 @@
-# Verificação técnica
+# Verificação
 
-Verificação local realizada em 14/10/2026, em x86_64, com Rust 1.99.0.
+Registro das validações locais realizadas em 13–14/10/2026; não representa uma nova
+execução de todos os testes a cada edição deste documento.
 
-## Código e execução
+## Validado
 
-- `cargo fmt --check` aprovado.
-- `cargo clippy --locked --all-targets -- -D warnings` aprovado.
-- 14 testes de CAR, CRS e pipeline aprovados.
-- Um teste de integração SaaS com PostgreSQL/PostGIS real aprovado.
-- Imagem Docker construída e servidor/worker executados em containers.
-- Servidor local com healthcheck saudável; manifestação de produção validada.
+- Formatação, Clippy e testes de CAR, CRS e processamento Rust.
+- Integração com PostgreSQL/PostGIS: isolamento entre contas, CSRF, RLS, fila,
+  idempotência, concorrência, recuperação de tarefas, cotas e downloads privados.
+- Fluxo no navegador: login, cadastro, importação CAR, solicitação e consulta de NDVI.
+- Processamento sintético e análises reais via Copernicus.
+- Produtos conferidos com NumPy/Rasterio, PROJ/pyproj e Shapely; PDF verificado
+  por parser e inspeção visual.
+- Migração cadastral para SIRGAS 2000 e exportação UTM de 10 m; produtos históricos preservados.
+- Execução em Docker x86_64 e configuração Compose.
 
-## Isolamento e consistência
-
-O teste de integração usa banco temporário e role sem SUPERUSER/BYPASSRLS.
-Valida duas contas, negação de leitura/escrita/download cruzados, RLS forçado,
-CSRF/Origin, snapshots após edição, idempotência, recuperação de leases,
-liberação de reserva após falha e cotas sob concorrência. Inclui upload CAR
-acima do limite de JSON, dentro do limite específico de arquivo.
-
-## Dados e sistema de coordenadas
-
-- Importação CAR: camadas ZIP internas, seleção da área total sem duplicar
-  área líquida/reserva, codificações, CRS, limites e rejeição de pacotes inválidos.
-- Migration SIRGAS 2000 testada sobre esquema anterior com cadastro e job pendente.
-  Preserva IDs, revisões, cotas, geometrias e referências dos produtos históricos.
-- Cadastro/snapshots em EPSG:4674; GeoJSON público em WGS84, convertido na fronteira.
-- Exportação SIRGAS 2000/UTM, fuso/hemisfério automático e pixels de 10 m.
-- Referências PROJ conferidas nos fusos 23S, 21S e 22N, com erro inferior a 1 mm.
-- Reprojeção por vizinho mais próximo validada com NumPy, Rasterio/GDAL, PROJ/pyproj
-  e Shapely; mantém nodata, buracos e máscara externa. Estatísticas na grade original.
-- PDFs validados por parser estrito e inspeção visual após renderização com Poppler.
-- Integração Copernicus OAuth/Process API validada localmente com observações reais,
-  incluindo proveniência da cena, produtos e download autenticado.
-
-Dados privados, credenciais, ZIPs CAR e produtos usados nos testes locais não fazem
-parte do repositório. Os fixtures versionados são sintéticos.
+Os arquivos CAR privados, credenciais e artefatos locais não fazem parte do repositório.
+A conferência de produtos reais verifica a consistência do GeoTIFF e das estatísticas;
+as bandas originais são removidas pelo worker após o processamento.
 
 ## Reproduzir
 
@@ -43,14 +25,15 @@ parte do repositório. Os fixtures versionados são sintéticos.
 cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
-python3 scripts/setup-dev.py
-docker compose up -d --wait postgres
 scripts/test-saas.sh
 ```
 
-O teste SaaS é ignorado no `cargo test` comum porque exige um banco dedicado;
-o script o executa explicitamente e remove somente o banco temporário criado.
-O workflow GitHub Actions executa essas verificações e um smoke test da imagem.
+Para QA independente de geometria e produtos, consulte os scripts `verify_car.py`
+e `verify_demo.py` e as instruções do [guia técnico](docs/GUIA-TECNICO.md).
 
-Validação ARM64 e implantação na OCI ainda estão pendentes. Requisitos e limites
-atuais de operação estão descritos no README e no documento de arquitetura.
+## Pendências
+
+- Compatibilidade ARM64 e implantação OCI.
+- Backup/restauração e coleta de arquivos órfãos.
+- Recuperação de acesso, verificação de e-mail, cobrança e monitoramento automático.
+- Cobertura de talhões na borda de tiles e reutilização de resultados por cena.
